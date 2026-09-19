@@ -113,7 +113,8 @@ Gabung Semua Sumber Sales (4 inputs: MTD invoices, 30-day detail,
 `Hitung Metrik Harian` (~680 lines) is the operational core: month-to-date and
 comparable-period revenue, running rate against target, day-of-week patterns,
 invoice-value distribution, per-line SKU availability, and the cross-check that
-flags product lines carrying ad spend while most of their SKUs are out of stock.
+flags product lines carrying ad spend while most of their SKUs are out of stock —
+the recurring priority signal for the owner.
 It resolves its inputs by trying a list of candidate node names, so upstream
 renames degrade quietly instead of throwing.
 
@@ -144,7 +145,8 @@ finance node a month-to-date figure that does not depend on a prior-month baseli
 
 `Hitung Laba Rugi & Neraca` (~740 lines) builds the P&L and balance sheet by summing
 **leaf** GL accounts rather than parent balances, maps revenue, platform fees,
-commissions, shipping and marketplace wallets per sales channel, and emits a
+affiliate commissions, shipping and marketplace wallets per sales channel (Shopee
+Afghan, Shopee Qudamah, Tiktok, Lazada, Desty Store), and emits a
 `diagnostikNeraca` block: balance-sheet identity difference, unmapped accounts with
 balances, a leaf-vs-mapping reconciliation, and a `penyusutanNol` flag for when no
 depreciation has been posted at all. A month whose window is too short, or whose

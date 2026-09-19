@@ -53,7 +53,7 @@ const laporanFinance = fin ? {
 } : null;
 
 const pertanyaan = (mode.pertanyaan || '').trim()
-  || 'Beri ringkasan kondisi bisnis BrandCo saat ini dan tiga hal yang paling perlu diperhatikan minggu ini.';
+  || 'Beri ringkasan kondisi bisnis Qudamah saat ini dan tiga hal yang paling perlu diperhatikan minggu ini.';
 
 const ketersediaan = {
   lanjutanDariMemori: lanjutan,

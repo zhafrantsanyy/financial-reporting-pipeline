@@ -70,7 +70,7 @@ function parseTglUS(v) {
   return `${m[3]}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
 }
 
-// "Charlie | 24 Juli | Instagram" -> produk "Charlie", objective "Instagram"
+// "Ahsan | 24 Juli | Instagram" -> produk "Ahsan", objective "Instagram"
 function pecahCampaign(nama) {
   const raw = String(nama || '').trim();
   const bagian = raw.split('|').map(s => s.trim()).filter(Boolean);
@@ -82,7 +82,7 @@ function pecahCampaign(nama) {
     .replace(/\s{2,}/g, ' ')
     .trim();
   if (!produk) produk = bagian[0] || raw;
-  // samakan penulisan: PAYDAY / PayDay -> Payday, "Charlie 2" -> Charlie
+  // samakan penulisan: PAYDAY / PayDay -> Payday, "Ahsan 2" -> Ahsan
   produk = produk.replace(/\s+\d+$/, '').trim();
   produk = produk.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
   const objective = bagian.length > 2 ? bagian[bagian.length - 1] : '';

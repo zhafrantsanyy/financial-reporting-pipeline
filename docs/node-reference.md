@@ -1,7 +1,7 @@
 # Node reference
 
-All 61 nodes, grouped by role. Node names are Indonesian, as written for the
-client's team; the English column is a gloss, not a rename.
+All 61 nodes, grouped by role. Node names are Indonesian, as written for
+Qudamah's team; the English column is a gloss, not a rename.
 
 Code nodes link to their extracted JavaScript under [`src/code-nodes/`](../src/code-nodes).
 
@@ -70,8 +70,8 @@ All four tenant endpoints run with `onError: continueRegularOutput`,
 | Node | English | Role |
 | --- | --- | --- |
 | [`Normalisasi Sales`](../src/code-nodes/normalisasi-sales.js) | Normalise sales | Fingerprints each row by its `DATA PENJUALAN <MONTH> <YEAR>` block headers, groups rows per source sheet, then reads each block by column order. Emits `{_source:'sales', bulanBerjalan, bulanSebelumnya, tahunLalu}`. Current month is picked from today's date, so new blocks need no code change. |
-| [`Normalisasi Ads`](../src/code-nodes/normalisasi-ads.js) | Normalise ads | Parses per-campaign daily rows, splits `Line \| 24 July \| Instagram` campaign names into product and objective, forward-fills dates within campaign groups, and repairs Indonesian thousands separators misread as decimals. Emits `{_source:'ads', iklan, linktreeHarian, leadsWa}`. |
-| [`Filter Item Category`](../src/code-nodes/filter-item-category.js) | — | `item/list.do` ignores the `fields` parameter and omits `itemCategory`, so category is recovered from the product name. Emits two levels: `brandItem` (always the product line) and `kategoriItem` (full category when matched). Longest categories are tested first so `JUMBO Mike Panjang` wins over `Mike Panjang`; variant words (`JUMBO`, `Slimfit`, `Kurta`, `Kemko`) are not line markers; aliases collapse two names onto one line. Logs a frequency table of rejected rows. |
+| [`Normalisasi Ads`](../src/code-nodes/normalisasi-ads.js) | Normalise ads | Parses per-campaign daily rows, splits `Ahsan \| 24 Juli \| Instagram` campaign names into product and objective, forward-fills dates within campaign groups, and repairs Indonesian thousands separators misread as decimals. Emits `{_source:'ads', iklan, linktreeHarian, leadsWa}`. |
+| [`Filter Item Category`](../src/code-nodes/filter-item-category.js) | — | `item/list.do` ignores the `fields` parameter and omits `itemCategory`, so category is recovered from the product name. Emits two levels: `brandItem` (always the product line) and `kategoriItem` (full category when matched). Longest categories are tested first so `JUMBO Ghazwan Panjang` wins over `Ghazwan Panjang`; variant words (`JUMBO`, `Slimfit`, `Kurta`, `Kemko`) are not line markers; `NAHLA` is aliased onto `SHABRINA` so one line is not split in two. Logs a frequency table of rejected rows. |
 | [`Laporan Marketing`](../src/code-nodes/laporan-marketing.js) | Marketing report | Consumes the merged normalised output, selects by `_source`, and builds the marketing section: spend, ROAS, CPM/CPC, WhatsApp leads, follower growth, with month-over-month and year-over-year deltas. |
 | `Gabung Normalisasi` | Merge | Feeds `Laporan Marketing` with both normalised streams. |
 
@@ -95,7 +95,7 @@ All four tenant endpoints run with `onError: continueRegularOutput`,
 | Node | English | Role |
 | --- | --- | --- |
 | [`Hitung Penjualan MTD`](../src/code-nodes/hitung-penjualan-mtd.js) | Compute MTD sales | Baseline-free month-to-date revenue from dated invoices. Deduplicates by `id`, excludes cancelled invoices, reports both counts and an explicit caveat that the figure is gross. |
-| [`Hitung Laba Rugi & Neraca`](../src/code-nodes/hitung-laba-rugi-neraca.js) | Compute P&L and balance sheet | ~740 lines, v9. Leaf-account totals, per-channel revenue / platform fee / commission / shipping / wallet mapping, monthly and annual views, liquidity ratios, and a `diagnostikNeraca` block (identity difference, unmapped accounts, leaf-vs-mapping reconciliation, `penyusutanNol`). Marks unreliable windows `layakDilaporkan: false`. |
+| [`Hitung Laba Rugi & Neraca`](../src/code-nodes/hitung-laba-rugi-neraca.js) | Compute P&L and balance sheet | ~740 lines, v9. Leaf-account totals, per-channel revenue / platform fee / affiliate commission / shipping / marketplace wallet mapping across Shopee Afghan, Shopee Qudamah, Tiktok, Lazada and Desty Store, monthly and annual views, liquidity ratios, and a `diagnostikNeraca` block (identity difference, unmapped accounts, leaf-vs-mapping reconciliation, `penyusutanNol`). Marks unreliable windows `layakDilaporkan: false`. |
 | [`Siapkan Payload Finance`](../src/code-nodes/siapkan-payload-finance.js) | Prepare finance payload | Serialises the finance structure for the model with `dataQuality` first. |
 | [`Dashboard Finansial HTML`](../src/code-nodes/dashboard-finansial-html.js) | — | ~570 lines, v4. Renders the P&L block only when `layakDilaporkan`, separates core sales from other income, splits operating expense into ads and the rest, hides liquidity ratios when meaningless, surfaces unposted depreciation as a warning. |
 | `File Dashboard Finansial` | Convert to File | HTML → binary attachment. |

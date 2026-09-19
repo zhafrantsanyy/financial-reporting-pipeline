@@ -1,5 +1,5 @@
 // =====================================================================
-// DASHBOARD BRANDCO - Generator HTML (v5)
+// DASHBOARD QUDAMAH - Generator HTML (v5)
 // Mode: Run Once for All Items
 //
 // PRINSIP
@@ -637,7 +637,7 @@ const paneHtml = tabs.map(t =>
 
 const html = '<!DOCTYPE html><html lang="id"><head><meta charset="utf-8">' +
 '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-'<title>Dashboard BrandCo ' + esc(labelBulan) + '</title><style>' +
+'<title>Dashboard Qudamah ' + esc(labelBulan) + '</title><style>' +
 ':root{--bg:#f6f7f9;--card:#fff;--ink:#0b1220;--sub:#667085;--line:#e6e9ef;--biru:#2563eb;--radius:14px}' +
 '*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);' +
 'font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;-webkit-font-smoothing:antialiased}' +
@@ -699,7 +699,7 @@ const html = '<!DOCTYPE html><html lang="id"><head><meta charset="utf-8">' +
 '.kolom-2{grid-template-columns:1fr}.tbl-wrap{max-height:none}' +
 '.bar-row{grid-template-columns:100px 1fr 84px;font-size:11.5px}}' +
 '</style></head><body><div class="shell">' +
-'<header class="top"><h1>Dashboard Operasional BrandCo</h1>' +
+'<header class="top"><h1>Dashboard Operasional Qudamah</h1>' +
 '<div class="per">' + esc(labelBulan) + ' &middot; data sampai ' + esc(tglHariIni) + '</div>' +
 '<div class="meta">Hanya menampilkan bulan berjalan. Dibuat ' + esc(dibuat) + ' WIB.</div></header>' +
 radios + navHtml + paneHtml +
@@ -756,7 +756,7 @@ return [{
     data: {
       data: Buffer.from(html, 'utf8').toString('base64'),
       mimeType: 'text/html',
-      fileName: 'dashboard-BrandCo-' + kunciBulan + '.html',
+      fileName: 'dashboard-qudamah-' + kunciBulan + '.html',
       fileExtension: 'html',
     },
   },

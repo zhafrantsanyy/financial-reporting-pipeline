@@ -403,7 +403,7 @@ const topLaku = adaVelocity
 const labelTopLaku = adaVelocity ? 'Tercepat terjual 30 hari' : 'SKU stok terbesar';
 
 // Cocokkan lini yang diiklankan ke lini stok. Semua kata nama produk iklan
-// harus ada di nama lini, supaya Charlie Jumbo tidak tercocok ke Charlie REG.
+// harus ada di nama lini, supaya Ahsan Jumbo tidak tercocok ke Ahsan REG.
 const cocokLini = [];
 for (const p of produkTampil) {
   const kata = String(p.produk).toLowerCase().split(/\s+/).filter(w => w.length > 2);

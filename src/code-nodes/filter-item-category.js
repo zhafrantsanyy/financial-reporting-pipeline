@@ -5,26 +5,26 @@
 //   kategoriItem -> kategori penuh kalau namanya cocok, kalau tidak jatuh ke brand
 
 const KATEGORI_DIIZINKAN = [
-  'Alfa','Bravo Kurma','Bravo Puzzle','Charlie Anak','Charlie Bulat','Charlie JUMBO',
-  'Charlie KIDS','Charlie REG','Charlie Remaja','Delta REG','Delta Remaja','Echo Jumbo',
-  'Echo Reguler','Foxtrot','Hotel','India','Mike Panjang','Oscar Reguler',
-  'JUMBO Bravo Kurma','JUMBO Mike Panjang','JUMBO Mike Pendek','Jumbo QUEBEC',
-  'JUMBO Sierra','JUMBO Uniform','JUMBO Whiskey','Kemko Kilo','Kurta Juliet',
-  'Kurta November','Uniform','Victor Papa','Slimfit Golf','Slimfit Lima',
-  'Slimfit Romeo','Slimfit Tango','Whiskey REG'
+  'Abqori','Adnan Kurma','Adnan Puzzle','Ahsan Anak','Ahsan Bulat','Ahsan JUMBO',
+  'Ahsan KIDS','Ahsan REG','Ahsan Remaja','Alfan REG','Alfan Remaja','Althaff Jumbo',
+  'Althaff Reguler','Arkan','Asyraf','Ayyas','Ghazwan Panjang','Jubah Reguler',
+  'JUMBO Adnan Kurma','JUMBO Ghazwan Panjang','JUMBO Ghazwan Pendek','Jumbo QAID',
+  'JUMBO Qassam','JUMBO Qotadah','JUMBO Syamil','Kemko Farouq','Kurta Bassam',
+  'Kurta Haneef','Qotadah','Shabrina Nahla','Slimfit Arsalan','Slimfit Ghaisan',
+  'Slimfit Qashwa','Slimfit Qayyim','Syamil REG'
 ];
 
 // Kata JUMBO, Slimfit, Kurta, Kemko hanya varian, bukan penentu lini.
-// VICTOR dan PAPA menunjuk lini yang sama, jadi dipetakan ke satu label.
-const BRAND = ['ALFA','BRAVO','CHARLIE','DELTA','ECHO','FOXTROT','GOLF','HOTEL',
-  'INDIA','JULIET','KILO','LIMA','MIKE','NOVEMBER','OSCAR','PAPA','QUEBEC',
-  'ROMEO','SIERRA','TANGO','UNIFORM','VICTOR','WHISKEY'];
+// SHABRINA dan NAHLA menunjuk lini yang sama, jadi dipetakan ke satu label.
+const BRAND = ['ABQORI','ADNAN','AHSAN','ALFAN','ALTHAFF','ARKAN','ARSALAN','ASYRAF',
+  'AYYAS','BASSAM','FAROUQ','GHAISAN','GHAZWAN','HANEEF','JUBAH','NAHLA','QAID',
+  'QASHWA','QASSAM','QAYYIM','QOTADAH','SHABRINA','SYAMIL'];
 const setBrand = new Set(BRAND);
-const ALIAS = { PAPA: 'VICTOR', VICTOR: 'VICTOR' };
+const ALIAS = { NAHLA: 'SHABRINA', SHABRINA: 'SHABRINA' };
 
 const norm = (s) => String(s ?? '').trim().toUpperCase().replace(/\s+/g, ' ');
 const rapi = (t) => t.charAt(0) + t.slice(1).toLowerCase();
-// Kategori terpanjang dicek duluan supaya 'JUMBO Mike Panjang' menang atas 'Mike Panjang'
+// Kategori terpanjang dicek duluan supaya 'JUMBO Ghazwan Panjang' menang atas 'Ghazwan Panjang'
 const kategoriUrut = [...KATEGORI_DIIZINKAN].sort((a, b) => b.length - a.length);
 
 function cariKategori(teks) {

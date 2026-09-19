@@ -154,7 +154,7 @@ if (leads.totalChat && leads.konversi < 0.15) {
 
 // ---------- susun laporan (HTML Telegram) ----------
 const L = [];
-L.push(`<b>LAPORAN MARKETING BRANDCO</b>`);
+L.push(`<b>LAPORAN MARKETING QUDAMAH</b>`);
 L.push(`Periode: <b>${bb.periode || '-'}</b> (${bb.hariTerisi || 0} hari)`);
 L.push('');
 

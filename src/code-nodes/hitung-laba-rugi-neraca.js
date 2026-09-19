@@ -254,9 +254,9 @@ function buildLabaRugi(bal, listNo) {
 
   const discountByChannel = {
     'Offline': bal('440101'),
-    'Shopee Store B': bal('440102'),
-    'Tiktok Store': bal('440103'),
-    'Lazada Store': bal('440104'),
+    'Shopee Qudamah': bal('440102'),
+    'Tiktok Qudamah': bal('440103'),
+    'Lazada Qudamah': bal('440104'),
   };
 
   const cogsDetail = {
@@ -271,34 +271,34 @@ function buildLabaRugi(bal, listNo) {
   };
 
   const adSpendByChannel = {
-    'Tiktok Store': bal('600032'),
-    'Shopee Store A': bal('600033'),
-    'Shopee Store B': bal('600034'),
+    'Tiktok Qudamah': bal('600032'),
+    'Shopee Afghan': bal('600033'),
+    'Shopee Qudamah': bal('600034'),
     'Lazada': bal('600036'),
     'Metta': bal('600051'),
   };
   const totalAdSpend = Object.values(adSpendByChannel).reduce((s, v) => s + v, 0);
 
   const affiliateCommissionByChannel = {
-    'Shopee Store A': bal('60000206'),
-    'Shopee Store B': bal('60000207'),
-    'Tiktok Store': bal('60000208'),
+    'Shopee Afghan': bal('60000206'),
+    'Shopee Qudamah': bal('60000207'),
+    'Tiktok Qudamah': bal('60000208'),
   };
   const totalAffiliateCommission = Object.values(affiliateCommissionByChannel).reduce((s, v) => s + v, 0);
 
   const platformFeeByChannel = {
-    'Shopee Store A': bal('60000201'),
-    'Shopee Store B': bal('60000203'),
-    'Tiktok Store': bal('60000204'),
-    'Lazada Store': bal('60000205'),
+    'Shopee Afghan': bal('60000201'),
+    'Shopee Qudamah': bal('60000203'),
+    'Tiktok Qudamah': bal('60000204'),
+    'Lazada Qudamah': bal('60000205'),
     'Desty Store': bal('60000209'),
   };
   const totalPlatformFee = Object.values(platformFeeByChannel).reduce((s, v) => s + v, 0);
 
   const shippingByChannel = {
-    'Shopee Store A': bal('600026'),
-    'Shopee Store B': bal('600027'),
-    'Tiktok Store': bal('600028'),
+    'Shopee Afghan': bal('600026'),
+    'Shopee Qudamah': bal('600027'),
+    'Tiktok Qudamah': bal('600028'),
     'Lazada': bal('600029'),
     'Offline': bal('600055'),
   };
@@ -319,10 +319,10 @@ function buildLabaRugi(bal, listNo) {
   };
 
   const channelAliases = {
-    'Shopee Store A': ['Shopee Store A'],
-    'Shopee Store B': ['Shopee Store B'],
-    'Tiktok Store': ['Tiktok Store', 'Tiktok'],
-    'Lazada': ['Lazada', 'Lazada Store'],
+    'Shopee Afghan': ['Shopee Afghan'],
+    'Shopee Qudamah': ['Shopee Qudamah'],
+    'Tiktok Qudamah': ['Tiktok Qudamah', 'Tiktok'],
+    'Lazada': ['Lazada', 'Lazada Qudamah'],
     'Offline': ['Offline'],
     'Desty Store': ['Desty Store'],
   };
@@ -517,8 +517,8 @@ const cash = {
   },
   totalCashBank: balLeaf('1101'),
   marketplaceWallet: {
-    'Shopee Store A': bal('110204'),
-    'Shopee Store B': bal('110205'),
+    'Shopee Afghan': bal('110204'),
+    'Shopee Qudamah': bal('110205'),
     'Tiktok': bal('110206'),
     'Lazada': bal('110207'),
     'Offline': bal('110208'),

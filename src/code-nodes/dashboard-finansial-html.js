@@ -455,7 +455,7 @@ const waktuCetak = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta'
 const html = `<!DOCTYPE html>
 <html lang="id"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dashboard Finansial BrandCo - ${esc(periode.labelBulan)}</title>
+<title>Dashboard Finansial Qudamah - ${esc(periode.labelBulan)}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
@@ -523,7 +523,7 @@ body{padding:10px}.kpi-v{font-size:20px}
 </style></head><body>
 <div class="wrap">
 <header>
-  <h1>Dashboard Finansial BrandCo</h1>
+  <h1>Dashboard Finansial Qudamah</h1>
   <div class="meta">Periode ${esc(periode.labelBulan)} &middot; Data per ${esc(periode.tanggalAcuan)} &middot; ${esc(m.accountCount)} akun</div>
 </header>
 <nav>${navHtml}</nav>

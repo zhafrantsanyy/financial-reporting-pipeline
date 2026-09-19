@@ -9,7 +9,7 @@ code-nodes/   One .js file per Code node (15 files, ~4,000 lines)
 prompts/      System and user prompts for the two LangChain agents
 ```
 
-Comments are in Indonesian, as written for the client's team.
+Comments are in Indonesian, as written for Qudamah's team.
 [`../docs/node-reference.md`](../docs/node-reference.md) glosses every node name
 and says what each file does.
 

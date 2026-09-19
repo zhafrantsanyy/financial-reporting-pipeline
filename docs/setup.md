@@ -63,21 +63,21 @@ strings, so an expression there silently becomes a literal.
 
 ### Sheet structure
 
-The parsers expect the client's sheet conventions:
+The parsers expect Qudamah's sheet conventions:
 
 - **`VS` sheet** — period blocks laid out side by side, each headed
   `DATA PENJUALAN <MONTH> <YEAR>`, with seven metric columns after each header.
 - **`META ADS` sheet** — one row per campaign per day, campaign names shaped
-  `<Line> | <Date> | <Objective>`, with a mid-sheet schema change signalled by a
+  `<Product Line> | <Date> | <Objective>` (e.g. `Ahsan | 24 Juli | Instagram`), with a mid-sheet schema change signalled by a
   repeated header row.
 
-Different conventions mean rewriting `Normalisasi Sales` / `Normalisasi Ads`; the
+A different convention means rewriting `Normalisasi Sales` / `Normalisasi Ads`; the
 rest of the pipeline is agnostic.
 
 ### Chart of accounts
 
 `Hitung Laba Rugi & Neraca` maps specific Accurate account numbers to P&L and
-balance-sheet lines. Your numbering will differ — edit the mapping objects near the
+balance-sheet lines. Another company file will have different numbering — edit the mapping objects near the
 top of that node. Accounts with balances that are not in the mapping are not lost:
 they surface in `diagnostikNeraca.akunTidakDikenal` so you can place them.
 

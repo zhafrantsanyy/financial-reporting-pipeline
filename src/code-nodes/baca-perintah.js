@@ -17,7 +17,7 @@
 // selama flag ini false.
 //
 // Konsekuensinya: siapa pun yang tahu nama bot ini bisa menarik laba
-// rugi, neraca, posisi kas, dan nilai persediaan BrandCo, serta
+// rugi, neraca, posisi kas, dan nilai persediaan Qudamah, serta
 // memicu eksekusi berbayar berulang kali.
 //
 // Untuk menguncinya kembali, ubah satu baris di bawah menjadi true.

@@ -22,7 +22,7 @@ The `fields` parameter is ignored there too. Two options remain: look up categor
 IDs via `item-category/list.do`, or recover the category from the product name.
 This workflow does the latter in `Filter Item Category`, with longest-match-first
 ordering and an explicit variant-word exclusion list, because name-prefix matching
-alone is fragile (`JUMBO Mike Panjang` would otherwise match `Mike Panjang`).
+alone is fragile (`JUMBO Ghazwan Panjang` would otherwise match `Ghazwan Panjang`).
 
 **Pagination is uniform.**
 Every list endpoint pages via `sp.page`, incremented by `$pageCount + 1`, and
@@ -51,8 +51,8 @@ All tenant endpoints run `onError: continueRegularOutput` with `retryOnFail: tru
 ## Accounting logic
 
 **Parent GL balances are not the sum of their children.**
-Accurate's parent `6000` balance excluded an owner-draw leaf account. Totalling on
-parents understated operating expense by nine figures (IDR), overstated net profit
+Accurate's parent `6000` balance excluded leaf account `600049` Owner Draw. Totalling on
+parents understated operating expense by IDR 256 M, overstated net profit
 by the same amount, and left the balance sheet out of balance. Switching all P&L
 totals to a sum over **leaf** accounts closed the accounting identity to zero.
 `diagnostikNeraca.rekonsiliasiMappingVsLeaf` now reports the gap on every run so the
