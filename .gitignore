@@ -1,0 +1,9 @@
+# Never commit a raw n8n export — it carries credential IDs, spreadsheet IDs,
+# chat IDs and webhook IDs.
+*.raw.json
+workflow/*.unsanitized.json
+.env
+.env.*
+node_modules/
+__pycache__/
+.DS_Store
