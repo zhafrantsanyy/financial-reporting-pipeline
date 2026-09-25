@@ -1,419 +1,351 @@
-# Plan: running the pipeline on a VPS without n8n
+# Plan: running the pipeline on a VPS with Hermes Agent instead of n8n
 
 Status: **plan only, nothing implemented yet.**
 
 Goal: the same three products (daily sales report, weekly financial pack,
-`/aiconsult` consultant) delivered to the same Telegram chat, produced by a small
-Node.js service on your own VPS instead of an n8n workflow. The numbers must match
-what n8n produces today before n8n is switched off.
+`/aiconsult` consultant) delivered to the same Telegram chat, with n8n switched
+off. The VPS already runs [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+(Nous Research), so Hermes takes over everything n8n did **around** the logic, and
+we only build the part Hermes cannot do: pulling Accurate and Sheets data and
+computing the numbers.
 
 ---
 
-## 1. What n8n is doing for us today
+## 1. The split: what Hermes does, what we build
 
-Everything n8n provides has to be replaced by something explicit. This is the full
-inventory, taken from `workflow/daily-financial-report.workflow.json`.
-
-| n8n feature | Where it is used | Replacement on the VPS |
+| Job | Today in n8n | On the VPS |
 | --- | --- | --- |
-| Schedule Trigger (cron, `Asia/Jakarta`) | `Jadwal Harian 07:00`, `Jadwal Mingguan Minggu 10:00` | `node-cron` inside the service with `timezone: 'Asia/Jakarta'` |
-| Telegram Trigger (webhook) | `Telegram Trigger` | Telegram long polling (`getUpdates`), no public URL or TLS needed |
-| Telegram send node (text + document) | 7 `Kirim ...` / `Konfirmasi` / `Balas` nodes | Small `telegram.js` client: `sendMessage`, `sendDocument` with a Buffer |
-| OAuth2 credential with auto refresh | 6 Accurate HTTP nodes | Own token store + refresh logic (section 4.1) |
-| HTTP Request pagination (`sp.page`, stop when `d` is empty, max 50 pages, 300 ms interval) | 4 Accurate list nodes | `paginate()` helper with the same rules |
-| `retryOnFail` (3 tries) + `onError: continueRegularOutput` | 4 Accurate list nodes | `withRetry()` wrapper that returns an empty result instead of throwing |
-| Google Sheets node (OAuth2, header row becomes object keys) | 4 Sheets nodes | `googleapis` with a service account + a converter that reproduces n8n's row shape exactly |
-| LangChain Agent + OpenAI Chat Model (`gpt-5-mini`) | `AI Analis Finance`, `AI Konsultan` | Direct `openai` SDK call (the agents have no tools, so an agent loop is not needed) |
-| Window Buffer Memory (6 turns, keyed on chat ID) | `Memori Konsultasi` | `chat_memory` table in SQLite |
-| `$getWorkflowStaticData('global')` | `Hitung Laba Rugi & Neraca` (balance snapshots) | `kv_store` table in SQLite, seeded from the current n8n static data |
-| Merge nodes (wait for all inputs) | 6 `Gabung ...` nodes | `await Promise.all([...])` |
-| IF / Switch gates | 8 gates | Plain `if` statements driven by the mode flags |
-| `$('Node Name')` cross-node reads | 7 Code nodes | Explicit function arguments |
-| `$now` (Luxon) | `Siapkan Sesi dan Tanggal` | `luxon` package, same API |
-| `$execution.mode` | `Hitung Laba Rugi & Neraca` (diagnostics only) | Constant `'production'` or `'manual'` from the CLI flag |
-| Convert to File | 2 nodes | `Buffer.from(html, 'utf8')` |
-| Execution log / retry UI | whole workflow | `runs` table in SQLite + structured logs (pino) |
+| Telegram bot (inbound commands, replies, allow list) | Telegram Trigger, `Baca Perintah`, `Rute Perintah`, 7 send nodes | **Hermes gateway** (`TELEGRAM_ALLOWED_USERS` replaces `CHAT_DIIZINKAN`) |
+| Schedules 07:00 daily and Sunday 10:00 | 2 Schedule Triggers | **Hermes cron** with `timezone: "Asia/Jakarta"` |
+| Sending HTML dashboards as files | Convert to File + sendDocument | **`MEDIA:/path/file.html`** in the delivered text, or `hermes send` |
+| LLM (finance narrative, consultant) | OpenAI node, `gpt-5-mini`, 2 LangChain agents | **Hermes agent** with whatever model Hermes is configured for, prompts become **skills** |
+| Conversation memory for follow-ups | Window Buffer Memory, `lanjutan` mode | **Hermes sessions** (native, the `lanjutan` path disappears) |
+| "Working on it" acknowledgement | `Konfirmasi Terima` | Output of the `/sales` and `/finance` quick commands |
+| Accurate OAuth2, session, pagination, retry | 6 HTTP nodes | **We build**: `qudamah-report` CLI |
+| Google Sheets reads | 4 Sheets nodes + 2 merges | **We build**: `qudamah-report` CLI |
+| Metrics, P&L, balance sheet, dashboards, message chunking | 15 Code nodes | **We build**: ported almost unchanged into the CLI |
+| Balance snapshots (`$getWorkflowStaticData`) | n8n static data | **We build**: SQLite file owned by the CLI |
 
-The good news: about 4,000 of the ~4,500 meaningful lines are the Code nodes, and
-they are already plain JavaScript. The n8n surface they touch is small:
+Result: one deterministic command-line program that knows nothing about Telegram,
+schedules or LLMs, plus a few Hermes config entries, scripts and skills that call it.
+Roughly half the work of the earlier "standalone service" version of this plan.
 
-- `$input.all()` / `$input.first()` in 11 nodes
-- `$('Node Name')` in 7 nodes (`Tentukan Mode`, `Hitung Metrik Harian`,
-  `Hitung Laba Rugi & Neraca`, `Hitung Penjualan MTD`, `Dashboard Finansial HTML`,
-  `Siapkan Payload Konsultasi`, plus the candidate-name lookups in
-  `Hitung Metrik Harian`)
-- `$json` in `Baca Perintah`
-- `$now` in `Siapkan Sesi dan Tanggal`
-- `$getWorkflowStaticData` and `$execution` in `Hitung Laba Rugi & Neraca`
-
-So the business logic ports almost unchanged. The real work is the integrations,
-state, and proving parity.
+```
+                 ┌──────────────────────── Hermes Agent (already on VPS) ────────────────────────┐
+ Telegram  ◀──▶  │ gateway ── quick commands /sales /finance ── skill /aiconsult ── cron jobs   │
+                 └───────┬───────────────────────┬────────────────────┬──────────────┬───────────┘
+                         │ bash script           │ terminal tool      │ pre-run      │ no-agent
+                         ▼                       ▼                    ▼ script       ▼ script
+                 ┌──────────────────────── qudamah-report (Node.js CLI, we build) ────────────────┐
+                 │ fetch Accurate + Sheets → ported Code-node logic → files in ~/qudamah/out/     │
+                 │ state: ~/qudamah/data/app.db (snapshots, run log, Accurate token)            │
+                 └───────────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 2. Key decisions (recommended)
+## 2. The `qudamah-report` CLI (what we build)
 
-| Decision | Recommendation | Why |
+### 2.1 Commands
+
+| Command | Does | Writes |
 | --- | --- | --- |
-| Language | **Node.js 20+, plain JavaScript (ESM)** | The Code nodes are already JS. TypeScript can come later; converting 4,000 lines while also migrating doubles the risk. |
-| Process model | **One long-running service** (bot + scheduler) plus a CLI for manual runs | The bot has to listen anyway; cron in the same process keeps one thing to deploy and monitor. |
-| Telegram inbound | **Long polling** | No domain, reverse proxy or certificate required. Webhook can be added later if wanted. |
-| Google auth | **Service account** (share both spreadsheets with its email) | No browser consent or token refresh on a headless server. |
-| Accurate auth | **One-time OAuth2 authorization code flow via a CLI helper, then stored refresh token** | Accurate has no client-credentials flow; this mirrors what the n8n credential does. |
-| State store | **SQLite** (`better-sqlite3`), single file | Holds snapshots, chat memory and run history. Easy to back up, no DB server. |
-| LLM client | **`openai` SDK directly**, not LangChain | The two agents have no tools; they are a system prompt + user message + memory. |
-| Deployment | **Docker Compose** (one container + a volume for `data/`) | Reproducible; systemd is a fine alternative (section 8). |
-| Config | `.env` for secrets, `config/*.json` for spreadsheets, chat IDs, schedules | Adding a month becomes a config edit, same spirit as today's "add a node". |
+| `qudamah-report sales` | Fetch everything, compute sales metrics + dashboard | `out/<date>/sales-1.txt, sales-2.txt, ...`, `SalesHarianQudamah.html`, `metrics.json` |
+| `qudamah-report finance` | Fetch everything, compute P&L + balance sheet + dashboard | `LaporanFinansialQudamah.html`, `finance-payload.json` (the `Siapkan Payload Finance` output, `dataQuality` first) |
+| `qudamah-report context [--max-age 6h]` | Print the consultant context (sales + finance, truncated at 14,000 chars like today). Reuses the latest run if fresh, otherwise refreshes | stdout |
+| `qudamah-report deliver sales\|finance` | Run the above and push results with `hermes send` (text chunks in order, then the HTML file) | Telegram |
+| `qudamah-report auth accurate` | One-time OAuth2 login, stores refresh token | `data/app.db` |
+| `qudamah-report import-static <file>` | Import n8n static data (balance snapshots) | `data/app.db` |
+| `--dry` on any command | Never writes snapshots, never sends | |
 
----
+Every run computes finance too, so the daily balance snapshot keeps accumulating,
+exactly like the current "finance always runs, only delivery is gated" rule.
 
-## 3. Target project layout
+### 2.2 Why Node.js
+
+The 15 Code nodes (about 4,000 lines) are already JavaScript and touch very little
+n8n API: `$input` (11 nodes), `$('Node')` (7), `$json`, `$now`, `$execution` and
+`$getWorkflowStaticData`. Keeping JS means the logic ports nearly verbatim. Hermes
+is Python, but it only calls our CLI through bash, so the languages never mix.
+Node 20+ has to be installed on the VPS (check with `node -v`).
+
+### 2.3 Layout (in this repo, under `app/`)
 
 ```
 app/
   package.json
-  .env.example
+  bin/qudamah-report.js
   config/
-    sources.json            spreadsheets + sheet names per period (replaces the 4 Sheets nodes)
-    app.json                chat IDs, allow list, schedules, limits
+    sources.json          spreadsheets + tabs per period (replaces the 4 Sheets nodes)
+    app.json              report chat ID, limits, paths
+    coa-mapping.json      chart of accounts mapping (moved out of code, after parity)
   src/
-    index.js                boot: load config, open DB, start bot + scheduler
-    cli.js                  `node src/cli.js run sales|finance|consult "q"`, `auth accurate`, `import-static`
-    pipeline/
-      mode.js               from tentukan-mode.js: resolveMode({ trigger, command }) -> flags
-      run.js                orchestrator: the whole workflow graph as one async function
-      fetch-accurate.js     session + 4 list endpoints
-      fetch-sheets.js       VS + META ADS readers
-    logic/                  ported Code nodes, one file each, pure functions
-      baca-perintah.js
-      siapkan-sesi-dan-tanggal.js
-      filter-item-category.js
-      normalisasi-sales.js
-      normalisasi-ads.js
-      laporan-marketing.js
-      hitung-metrik-harian.js
-      pecah-pesan-sales.js
-      dashboard-sales-html.js
-      hitung-penjualan-mtd.js
-      hitung-laba-rugi-neraca.js
-      dashboard-finansial-html.js
-      siapkan-payload-finance.js
-      siapkan-payload-konsultasi.js
-    clients/
-      accurate.js           OAuth2 token refresh, open-db, paginate, retry
-      sheets.js             googleapis + n8n-compatible row conversion
-      openai.js             chat completion with system prompt + memory
-      telegram.js           polling, sendMessage, sendDocument
-    store/
-      db.js                 SQLite schema + migrations
-      kv.js                 replaces $getWorkflowStaticData
-      memory.js             replaces Memori Konsultasi
-    prompts/                copied from src/prompts
-  test/
-    fixtures/               real n8n execution inputs/outputs per node (git-ignored, see 6.1)
-    parity/                 one test per ported node
-  Dockerfile
-  docker-compose.yml
+    pipeline/run.js       the old 61-node graph as one async function
+    clients/accurate.js   token refresh, db-list/open-db, paginate, retry
+    clients/sheets.js     service account + n8n-compatible row shape
+    store/db.js           SQLite: kv (snapshots), runs, tokens
+    logic/*.js            one file per ported Code node
+  test/parity/            per-node tests against captured n8n data
+hermes/                   everything that gets copied into ~/.hermes
+  scripts/qudamah-sales.sh
+  scripts/qudamah-finance-precheck.sh
+  scripts/qudamah-launch.sh
+  skills/aiconsult/SKILL.md
+  skills/qudamah-finance/SKILL.md
+  config.snippet.yaml     quick_commands + timezone to merge into config.yaml
+  install.sh              copies the above, creates the cron jobs
 ```
 
-`src/code-nodes/` and `workflow/` stay in the repo untouched until cutover, so the
-n8n version can still be imported as a fallback.
+Secrets live in `~/qudamah/.env` (mode 600), read by the CLI itself. This matters:
+Hermes **strips credentials from the environment of cron scripts**, so the CLI must
+not depend on inherited env vars.
 
----
+### 2.4 Integrations inside the CLI
 
-## 4. Integration details
+**Accurate Online**
+- `auth accurate` runs the authorization code flow once (prints the authorize URL,
+  you paste back the code), stores `access_token`, `refresh_token`, expiry.
+- Refresh before each run if expiring within 24 h, and once on any 401.
+- `db-list.do` → `open-db.do?id=<d[0].id>` → `host` + `session`. Throw if no host.
+- The four list calls use the query strings from the workflow JSON **verbatim**:
 
-### 4.1 Accurate Online
+  | Call | `fields` | Filter |
+  | --- | --- | --- |
+  | Stok item | `id,no,name,itemType,quantity,availableToSell,unit1Name` | `itemType EQUAL INVENTORY` |
+  | Invoice MTD | `id,number,transDate,totalAmount,statusName` | `transDate BETWEEN tglAwalBulan..tglKemarin` |
+  | Invoice 30 hari | `id,transDate,detailItem` | `transDate BETWEEN tglAwalVelocity..tglKemarin` |
+  | GL account | `id,no,name,accountType,balance` | none |
 
-1. **Token bootstrap (one time):** `node src/cli.js auth accurate` prints the
-   authorize URL (`https://account.accurate.id/oauth/authorize` with client ID,
-   scopes for item, sales invoice and GL account read, and a redirect URI). You open it,
-   approve, paste back the `code`; the CLI exchanges it at
-   `https://account.accurate.id/oauth/token` and saves `access_token`,
-   `refresh_token` and expiry in SQLite.
-2. **Refresh:** before each run, refresh if the token expires within 24 h; also
-   refresh once and retry on a 401.
-3. **Session:** `db-list.do` then `open-db.do?id=<d[0].id>` gives `host` +
-   `session`, exactly as `Ambil Daftar Database` / `Buka Database Accurate` do.
-   Throw if no host (same as `Siapkan Sesi dan Tanggal`).
-4. **List calls:** port the query strings **verbatim** from the workflow JSON:
+  `sp.pageSize=100`, `X-Session-ID` header, stop when `d` is empty, max 50 pages,
+  300 ms between pages, 3 attempts, and on final failure return empty data plus a
+  warning (today's `continueRegularOutput`). All four run in parallel.
 
-   | Call | `fields` | Filter |
-   | --- | --- | --- |
-   | Stok item | `id,no,name,itemType,quantity,availableToSell,unit1Name` | `itemType EQUAL INVENTORY` |
-   | Invoice MTD | `id,number,transDate,totalAmount,statusName` | `transDate BETWEEN tglAwalBulan..tglKemarin` |
-   | Invoice 30 hari | `id,transDate,detailItem` | `transDate BETWEEN tglAwalVelocity..tglKemarin` |
-   | GL account | `id,no,name,accountType,balance` | none |
+**Google Sheets**
+- Service account, both spreadsheets shared with its email as Viewer.
+- Tabs listed in `config/sources.json`; adding a month is one config line.
+- **Highest parity risk.** The parsers depend on the exact item shape the n8n Sheets
+  node emits (header row as keys, naming of blank or duplicate headers, numbers vs
+  formatted strings, the `6.502` issue, `row_number`). The converter is tested
+  against captured n8n output before anything else is trusted.
 
-   All with `sp.pageSize=100`, `X-Session-ID` header, pagination until `d` is
-   empty, max 50 pages, 300 ms between pages, 3 attempts, and on final failure
-   return `[]` plus a warning (the `continueRegularOutput` behaviour).
-5. **Output shape:** n8n pagination emits one item per page, each `{ s, d: [...] }`.
-   The ported nodes read `i.json.d`, so `fetch-accurate.js` returns
-   `pages.map(p => ({ json: p }))` for the first iteration to keep code unchanged.
+### 2.5 Porting the Code nodes
 
-Invoice MTD, 30-day invoices and stock run in parallel; GL runs after
-`Hitung Penjualan MTD` only because n8n wired it that way. On the VPS it can run in
-parallel too, since it does not depend on that output.
+Same two-step method as before:
 
-### 4.2 Google Sheets
+1. **Wrap, do not rewrite.** Each node body goes into a function that receives a tiny
+   shim (`$input.all()`, `$('Name').first()`, `$now`). Parity tests must pass.
+2. **Then clean up** file by file, re-running parity after each change.
 
-- Service account JSON in `data/secrets/google-sa.json`, spreadsheets shared with
-  its email as Viewer.
-- `config/sources.json` lists each tab:
-  ```json
-  {
-    "vs":  [{ "spreadsheetId": "...", "sheet": "VS", "label": "Juli" },
-            { "spreadsheetId": "...", "sheet": "VS", "label": "Sept" }],
-    "ads": [{ "spreadsheetId": "...", "sheet": "META ADS", "label": "Juli" },
-            { "spreadsheetId": "...", "sheet": "META ADS", "label": "Sept" }]
-  }
-  ```
-- **Highest parity risk in the whole migration.** The parsers depend on the exact
-  object shape the n8n Sheets node produces: first row as keys, how blank and
-  duplicate header cells are named, whether numbers arrive as numbers or formatted
-  strings (the `6.502` problem in the engineering notes), empty trailing cells, and
-  the `row_number` field. Plan:
-  1. Capture raw n8n output of all 4 Sheets nodes from a real execution (6.1).
-  2. Write `sheets.js` using `spreadsheets.values.get` with
-     `valueRenderOption: 'UNFORMATTED_VALUE'` (or `FORMATTED_VALUE`, whichever
-     matches the capture) and a `rowsToN8nItems()` converter.
-  3. Unit test: converter output deep-equals the captured n8n output.
-- VS tabs and ADS tabs are fetched as two separate arrays and passed to their own
-  parser, keeping the "never mix VS and ADS" invariant.
+Nodes that change meaning or disappear with Hermes:
 
-### 4.3 OpenAI
-
-- One `chat.completions.create` per agent: `model: 'gpt-5-mini'`, system prompt
-  from `prompts/ai-analis-finance.md` or `prompts/ai-konsultan.md`, user message
-  built exactly like the n8n `text` expression.
-- **Memory:** before calling, load the last 6 exchanges for the chat ID from
-  `chat_memory`, append the new user turn, then save both user and assistant turns.
-  Only the consultant uses memory; the finance analyst does not.
-- **Telegram HTML safety:** add a `sanitizeTelegramHtml()` step that keeps only
-  `<b> <i> <code> <a href>` and closes unbalanced tags, then falls back to plain
-  text if Telegram still rejects the message. Today this relies on the prompt alone.
-
-### 4.4 Telegram
-
-- Long polling with `getUpdates` (library: `grammy`, or ~80 lines of `fetch`).
-- **Only one consumer per bot token.** While n8n's Telegram Trigger is active it
-  holds a webhook, and `getUpdates` will fail with 409. See cutover (section 7).
-- `Baca Perintah` logic runs on each update; allow list (`BATASI_KE_DAFTAR_IZIN`,
-  `CHAT_DIIZINKAN`) moves to `config/app.json` and is **on by default**.
-- Acknowledge (`Konfirmasi Terima`) is sent immediately, the pipeline runs in the
-  background, and a per-chat lock prevents a second `/finance` from starting while
-  one is running (new protection n8n did not have).
-- Send order stays the same: chunked text messages sequentially, then the HTML
-  document named `SalesHarianQudamah.html` / `LaporanFinansialQudamah.html`.
-- Handle Telegram 429 (`retry_after`) and 400 parse errors (resend as plain text).
-
----
-
-## 5. Porting the logic
-
-### 5.1 Mode resolution becomes explicit
-
-`Tentukan Mode` currently guesses which trigger fired by probing for a node name.
-On the VPS the caller already knows:
-
-```js
-resolveMode({ trigger: 'schedule-daily' })          // -> jadwal-sales
-resolveMode({ trigger: 'schedule-weekly' })         // -> jadwal-finance
-resolveMode({ trigger: 'telegram', parsed })        // -> harian | finansial | konsultasi | lanjutan
-```
-
-The flag table in `docs/architecture.md` (`tarikData`, `prosesSales`, `kirimSales`,
-`kirimFinansial`, `kirimKonsultasi`) is kept as is and becomes a unit test.
-
-### 5.2 The orchestrator (`run.js`)
-
-The 61-node graph collapses to roughly this:
-
-```js
-async function run(flags, ctx) {
-  if (!flags.tarikData) return answerFollowUp(flags, ctx);        // lanjutan fast path
-
-  const sesi = await accurate.openSession();
-  const tgl  = siapkanSesiDanTanggal(sesi, ctx.now);
-
-  const [invMtd, inv30, stokRaw, glRaw, vsRows, adsRows] = await Promise.all([
-    accurate.list('sales-invoice', mtdQuery(tgl)),
-    accurate.list('sales-invoice', velocityQuery(tgl)),
-    accurate.list('item', stokQuery),
-    accurate.list('glaccount', glQuery),
-    sheets.read(sources.vs),
-    sheets.read(sources.ads),
-  ]);
-
-  const stok      = filterItemCategory(stokRaw);
-  const sales     = normalisasiSales(vsRows, ctx.now);
-  const ads       = normalisasiAds(adsRows);
-  const marketing = laporanMarketing([sales, ads]);
-
-  // finance always computed (keeps the daily snapshot alive)
-  const mtd = hitungPenjualanMtd(invMtd, tgl);
-  const fin = hitungLabaRugiNeraca(glRaw, { tgl, mtd, kv: ctx.kv, mode: ctx.execMode });
-
-  let metrik = null;
-  if (flags.prosesSales) {
-    metrik = hitungMetrikHarian({ tgl, invMtd, inv30, stok, sales, ads, marketing });
-    const html = dashboardSalesHtml({ ...same inputs });
-    if (flags.kirimSales) await sendSales(flags.chatId, pecahPesanSales(metrik), html);
-  }
-  if (flags.kirimFinansial) await sendFinance(flags.chatId, fin, ctx);
-  if (flags.kirimKonsultasi) await answerConsult(flags, { metrik, fin }, ctx);
-}
-```
-
-The merges and IF gates disappear; the "wait for both sales and P&L" guarantee of
-`Gabung Konteks Konsultasi` becomes simple sequential code.
-
-### 5.3 Porting each Code node
-
-Two-step approach so behaviour is proven before anything is refactored:
-
-1. **Wrap, do not rewrite.** Each `src/code-nodes/*.js` body goes into a function
-   that receives a tiny shim:
-   ```js
-   export function hitungPenjualanMtd({ $input, $ }) { /* original body, unchanged */ }
-   ```
-   where `$input.all()` returns `[{ json }]` and `$('Name').all()/first()` looks up
-   named results passed in by `run.js`. Parity tests (6.1) must pass at this stage.
-2. **Then clean up** node by node: replace the shim with real parameters, delete
-   the candidate-name lookups in `Hitung Metrik Harian` (no longer needed), delete
-   the trigger-name probe in `Tentukan Mode`. Re-run parity after each file.
-
-Specific notes:
-
-| Node | Change needed |
+| Node | Fate |
 | --- | --- |
-| `siapkan-sesi-dan-tanggal` | `$now` becomes `DateTime.now()` from `luxon`; inject `now` so tests can freeze the date. |
-| `hitung-laba-rugi-neraca` | `$getWorkflowStaticData('global')` becomes `kv.get('global')`, and the object is written back with `kv.set` **only at the end of a successful production run** (same as n8n's "persist only on production"). Manual CLI runs use `--dry-state` and do not write. |
-| `hitung-metrik-harian` | The multi-name `$(n)` lookups become explicit arguments. |
-| `baca-perintah` | `$json` becomes the Telegram `update` argument. |
-| `siapkan-payload-konsultasi` | The `try/catch` around missing upstream nodes becomes `metrik ?? null`, `fin ?? null`. Keep the 14,000-character truncation note. |
-| Dashboards | No change; output a string, wrap in Buffer. |
-| Chart of accounts mapping | Move the account-number tables from `hitung-laba-rugi-neraca` into `config/coa-mapping.json` so a new company file needs no code edit (optional, after parity). |
+| `Baca Perintah`, `Rute Perintah`, `Tentukan Mode` | **Gone.** Hermes routes commands; each CLI command already knows its mode. |
+| `Siapkan Payload Konsultasi` | Becomes the `context` command. |
+| `Pecah Pesan Sales` | Kept. Chunks are sent in order by `deliver`, so the 3,800-char split stays exact. |
+| `Hitung Laba Rugi & Neraca` | `$getWorkflowStaticData` → SQLite `kv`, written only at the end of a successful non-dry run. |
+| `Siapkan Sesi dan Tanggal` | `$now` → Luxon with `Asia/Jakarta`, injectable for tests. |
+| All others | Ported unchanged. |
 
 ---
 
-## 6. Testing and parity
+## 3. The Hermes side
 
-### 6.1 Capture real fixtures from n8n (do this first)
+### 3.1 Settings (`~/.hermes/config.yaml` and `.env`)
 
-Before writing code, export 3 to 5 real production executions from n8n (one daily,
-one weekly, one `/aiconsult`) with "Save execution data" on. From each execution
-extract, per node, the input items and output items into
-`app/test/fixtures/<date>/<node>.json`. These contain real revenue and balances, so:
-**`test/fixtures/` is git-ignored and never pushed**, matching the repository's
-"pipeline, not data" rule.
+```yaml
+timezone: "Asia/Jakarta"          # cron schedules and agent clock
 
-### 6.2 Test layers
+quick_commands:
+  sales:
+    type: exec
+    command: bash ~/.hermes/scripts/qudamah-launch.sh sales
+  finance:
+    type: exec
+    command: bash ~/.hermes/scripts/qudamah-launch.sh finance
+```
 
-| Layer | What it proves |
-| --- | --- |
-| Parity per node | For every ported function: fixture input in, deep-equal to fixture output (with `now` frozen to the execution date). |
-| Mode table | All 6 modes produce the documented flags. |
-| Sheets converter | API rows converted to n8n item shape equal the captured Sheets node output. |
-| Accurate pagination | Mocked HTTP: stops on empty `d`, respects 50-page cap, retries 3 times, degrades to `[]`. |
-| Telegram chunking | Messages over 3,800 chars split exactly as `Pecah Pesan Sales` does. |
-| End to end (dry run) | `node src/cli.js run sales --dry` fetches live data and writes the message + HTML to `data/out/` instead of Telegram. |
+```bash
+# ~/.hermes/.env
+TELEGRAM_ALLOWED_USERS=<owner user id>,<team user ids>
+```
 
-### 6.3 Shadow run
+Replaces `BATASI_KE_DAFTAR_IZIN` / `CHAT_DIIZINKAN`, and is on from day one. Today
+the n8n bot answers anyone, which leaks the P&L.
 
-Point the VPS at a **separate test bot and test chat** and let the schedules run
-alongside n8n for 7 days, including one Sunday. Compare each day:
-the text report, both HTML files (diff), and the `diagnostikNeraca` block.
+### 3.2 Daily sales, 07:00 (no LLM)
+
+A **no-agent** cron job: zero tokens, just our script.
+
+```bash
+hermes cron create "0 7 * * *" --no-agent --script qudamah-sales.sh \
+  --deliver telegram:<REPORT_CHAT_ID> --name "qudamah-sales-harian"
+```
+
+`qudamah-sales.sh` runs `qudamah-report deliver sales`, which sends the text chunks
+and then the HTML file via `hermes send` (`MEDIA:~/qudamah/out/<date>/SalesHarianQudamah.html`),
+and prints nothing. Empty stdout = no extra message, a non-zero exit = Hermes sends
+an error alert, so a broken run can never fail silently.
+
+(Why `hermes send` inside the script instead of printing the report to stdout:
+the daily report is often longer than one Telegram message, and sending the chunks
+ourselves keeps the `(1/3)` split and the order exactly as today.)
+
+### 3.3 Weekly finance, Sunday 10:00 (LLM)
+
+An **agent** cron job with a pre-run script and a skill:
+
+```bash
+hermes cron create "0 10 * * 0" \
+  --script qudamah-finance-precheck.sh \
+  --skill qudamah-finance \
+  --deliver telegram:<REPORT_CHAT_ID> \
+  --name "qudamah-finance-mingguan" \
+  "Tulis analisis finansial mingguan dari payload yang diberikan."
+```
+
+- `qudamah-finance-precheck.sh` runs `qudamah-report finance`, prints
+  `finance-payload.json` as the job's context. If the run failed, it prints
+  `{"wakeAgent": false}` after sending an error message, so no tokens are spent on
+  empty data.
+- Skill `qudamah-finance` = today's `src/prompts/ai-analis-finance.md` (system rules:
+  read `dataQuality` first, flag `penyusutanNol`, no P&L when `layakDilaporkan` is
+  false) plus one line: end the answer with
+  `MEDIA:~/qudamah/out/<date>/LaporanFinansialQudamah.html` so the dashboard is
+  attached to the same delivery.
+- The "only `<b> <i> <code> <a>`" rule in the prompt is dropped: Hermes' Telegram
+  adapter does the formatting, so the prompt asks for plain Markdown instead.
+
+### 3.4 `/sales` and `/finance` on demand
+
+Quick commands time out after **30 seconds** and a report takes about a minute, so
+`qudamah-launch.sh` starts the job in the background and returns at once:
+
+```bash
+#!/usr/bin/env bash
+# replies instantly (this text is the old "Konfirmasi Terima"), work continues detached
+setsid nohup ~/qudamah/bin/qudamah-report deliver "$1" >>~/qudamah/logs/launch.log 2>&1 &
+echo "Siap. Menyiapkan laporan $1, mohon tunggu sekitar satu menit."
+```
+
+A lock file in the CLI stops a second `/finance` from starting while one runs.
+`/finance` on demand then reuses the same path as the cron job: easiest is
+`hermes cron run <finance job id>` from the launcher, so the narrative is written by
+the same skill.
+
+Delivery goes to the report chat. If `/sales` must answer whichever chat asked, we
+need Hermes to pass the chat ID to the exec command; this is open question 3.
+
+### 3.5 `/aiconsult` (LLM, conversational)
+
+A Hermes **skill named `aiconsult`**, so `/aiconsult <question>` works directly:
+
+- Content = today's `src/prompts/ai-konsultan.md`, plus: "first run
+  `qudamah-report context --max-age 6h` with the terminal tool and answer only from
+  that data; if data quality flags a caveat, say so".
+- Follow-up replies are just the ongoing Hermes conversation, so memory and the old
+  `lanjutan` fast path come for free.
+- Allow the command `qudamah-report context` in Hermes' command approval list so the
+  agent does not stop to ask permission on Telegram.
+- Usually answers from the 07:00 run, which is seconds, instead of re-fetching
+  everything like n8n did.
 
 ---
 
-## 7. State migration and cutover
+## 4. Testing and parity
 
-1. **Export snapshots.** The balance snapshots in n8n static data
-   (`snapshotAkun`, `snapshotAwal`, up to 14 months each) are what make month-to-date
-   finance numbers work. Fetch them with the n8n public API
-   (`GET /api/v1/workflows/<id>`, field `staticData`) or from the n8n database
-   (`workflow_entity.staticData`) and import with
-   `node src/cli.js import-static staticData.json`. Without this step the first month
-   on the VPS has no baseline and the P&L is marked `layakDilaporkan: false`.
-2. **Chat memory** is not migrated (6-turn window; losing it is harmless).
-3. **Shadow week** as in 6.3.
-4. **Switch day:**
-   1. Deactivate the n8n workflow (removes its Telegram webhook and schedules).
-   2. Call `deleteWebhook` on the production bot to be sure.
-   3. Re-export n8n static data one last time and re-import it (it kept updating
-      during the shadow week).
-   4. Change `.env` to the production bot token and chat ID, restart.
-   5. Send `/sales` and `/finance` manually and check the output.
-5. **Rollback:** stop the container, re-activate the n8n workflow. Nothing on the
-   n8n side was deleted, so rollback takes under 5 minutes. Keep n8n installed for
-   at least one month.
+1. **Capture fixtures from n8n first.** Export 3 to 5 real executions (a daily, a
+   weekly, an `/aiconsult`) and save each Code node's input and output as JSON under
+   `app/test/fixtures/`. These contain real figures, so the folder is **git-ignored
+   and never pushed**.
+2. **Parity per node:** fixture in, deep-equal fixture out, date frozen.
+3. **Sheets converter:** API rows → n8n item shape equal to the captured Sheets output.
+4. **Accurate client:** mocked HTTP for pagination stop, 50-page cap, 3 retries,
+   graceful empty result.
+5. **Dry runs on the VPS:** `qudamah-report sales --dry`, then open the files in
+   `out/` and compare to what n8n sent that morning.
+6. **Hermes side:** `hermes cron run <id>` for each job, sending to a **test chat**
+   first; `hermes cron doctor` clean.
 
 ---
 
-## 8. VPS deployment
+## 5. Cutover
 
-- **Sizing:** 1 vCPU, 1 GB RAM is plenty (the heaviest job is a few thousand
-  invoices in memory).
-- **Runtime:** Docker Compose, `restart: unless-stopped`, one volume `./data`
-  holding `app.db`, `secrets/`, `out/`, `logs/`. Container `TZ=Asia/Jakarta`.
-  Alternative without Docker: Node 20 + a systemd unit with `Restart=always`.
-- **Secrets (`.env`, mode 600, never committed):** `ACCURATE_CLIENT_ID`,
-  `ACCURATE_CLIENT_SECRET`, `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`,
-  `GOOGLE_SA_PATH`, `DEFAULT_CHAT_ID`, `ALLOWED_CHAT_IDS`.
-- **No inbound ports** needed thanks to long polling. Firewall: allow SSH only.
-- **Backups:** daily `sqlite3 app.db ".backup"` to a second location (the snapshots
-  in it cannot be recreated because the GL endpoint has no date filter).
-- **Monitoring:**
-  - Every run writes a row to `runs` (mode, trigger, start, end, status, warnings).
-  - Any failed run, or a scheduled run that did not happen by 07:15 / Sunday 10:15,
-    sends an alert to an admin Telegram chat.
-  - Optional: a healthchecks.io ping after each successful scheduled run.
-- **Updates:** `git pull && docker compose up -d --build`.
+The Telegram bot question is simpler than before. Hermes already has its own bot,
+separate from the n8n bot, so both can run at the same time with no conflict.
+
+1. **Pick the bot.** Recommended: use the **Hermes bot** for reports and retire the
+   n8n bot, so there is one bot to talk to. (Alternative: move the n8n bot token into
+   Hermes; only if the team must keep the same bot name.)
+2. **Import snapshots.** Get n8n static data (`snapshotAkun`, `snapshotAwal`) via the
+   n8n API (`GET /api/v1/workflows/<id>` → `staticData`) or its database, then
+   `qudamah-report import-static`. Without this the first month has no finance baseline.
+3. **Shadow week.** Hermes cron jobs deliver to a test chat for 7 days including one
+   Sunday while n8n keeps serving the owner. Compare text, both HTML files, and
+   `diagnostikNeraca` daily.
+4. **Switch day.** Deactivate the n8n workflow, re-import static data one last time
+   (it kept changing during the shadow week), point the cron jobs at the owner's
+   chat, run `/sales` and `/finance` once by hand.
+5. **Rollback** in minutes: `hermes cron pause` both jobs, reactivate n8n. Keep n8n
+   installed for a month.
 
 ---
 
-## 9. Phases and effort
+## 6. Operations
+
+- **Backups:** daily copy of `~/qudamah/data/app.db` off the box. The snapshots cannot
+  be rebuilt, because Accurate's GL endpoint has no date filter.
+- **Failures:** non-zero exit from any script → Hermes delivers an error alert.
+  The CLI also logs every run to the `runs` table and `~/qudamah/logs/`.
+- **Accurate login expiry** is the most likely real-world failure; the error message
+  names the fix (`qudamah-report auth accurate`).
+- **Updates:** `git pull` in the repo, `npm ci` in `app/`, re-run `hermes/install.sh`.
+- **Model cost:** daily report now costs zero tokens; only the weekly narrative and
+  `/aiconsult` use the model.
+
+---
+
+## 7. Phases and effort
 
 | # | Phase | Output | Estimate |
 | --- | --- | --- | --- |
-| 0 | Capture fixtures + static data from n8n | `test/fixtures/`, `staticData.json` | 0.5 day |
-| 1 | Skeleton: project, config, SQLite, logging, CLI | `app/` runs `--help` | 0.5 day |
-| 2 | Clients: Accurate (auth, session, paginate), Sheets, Telegram, OpenAI | Each callable from the CLI | 2 days |
-| 3 | Port the 15 Code nodes behind the shim + parity tests green | `logic/`, `test/parity/` | 2 days |
-| 4 | Orchestrator, mode resolution, memory, locks | `run.js` works in `--dry` mode | 1 day |
-| 5 | Deploy to VPS, alerts, backups | Service running on test bot | 0.5 day |
-| 6 | Shadow week | Daily diff log, fixes | 7 days elapsed, ~1 day work |
-| 7 | Cutover | n8n off, VPS live | 0.5 day |
-| 8 | Cleanup (remove shim, COA mapping to config, update README/docs) | Final docs | 1 day |
+| 0 | Capture fixtures + static data from n8n; check Hermes version, Node, Telegram allow list | Fixtures, `staticData.json` | 0.5 day |
+| 1 | CLI skeleton, config, SQLite, logging | `qudamah-report --help` | 0.5 day |
+| 2 | Accurate + Sheets clients | Real data fetched with `--dry` | 1.5 days |
+| 3 | Port 12 remaining Code nodes behind the shim, parity green | `logic/`, tests | 2 days |
+| 4 | `sales`, `finance`, `context`, `deliver` commands | Files in `out/`, Telegram test sends | 0.5 day |
+| 5 | Hermes scripts, skills, quick commands, cron jobs, `install.sh` | Everything firing into a test chat | 1 day |
+| 6 | Shadow week | Daily comparison | 7 days elapsed, ~1 day work |
+| 7 | Cutover + docs update | n8n off | 0.5 day |
 
-Roughly **8 to 9 working days** of effort plus the shadow week.
-
----
-
-## 10. Risks
-
-| Risk | Impact | Mitigation |
-| --- | --- | --- |
-| Sheets row shape differs from n8n (header naming, number formatting) | Silent wrong totals | Converter tested against captured n8n output (4.2) |
-| Losing the GL balance snapshots | No MTD P&L for a month | Import static data twice (7.1, 7.4.3), daily DB backups |
-| Accurate refresh token expires or is revoked | All reports empty | Alert on auth failure with the exact `cli auth accurate` fix |
-| Bot token used by n8n and VPS at once | 409 errors, missed commands | Separate test bot during shadow; `deleteWebhook` at cutover |
-| Timezone drift (server in UTC) | Report for the wrong day | `TZ=Asia/Jakarta` in container **and** explicit zone in cron and Luxon |
-| Behavioural drift while cleaning up the shim | Subtle number changes | Parity tests re-run after every cleanup commit |
-| Weekly schedule day | Finance pack on the wrong day | The n8n node uses the weekly default (Sunday); confirm in the n8n UI before hardcoding `0 10 * * 0` |
+About **6 to 7 working days** plus the shadow week.
 
 ---
 
-## 11. Open questions for you
+## 8. Risks
 
-1. **Docker or plain systemd** on the VPS? (Plan assumes Docker.)
-2. **Which OS / provider** is the VPS? Affects the setup script only.
-3. Do you have access to the **n8n executions and static data** for fixture capture
-   (n8n API key or database access)?
-4. Keep **`gpt-5-mini`**, or switch model while migrating? (Recommendation: keep it
-   until parity is signed off, change afterwards.)
-5. Should the new code live in **this repo under `app/`** (recommended) or a new repo?
-6. Any extras you want once it is off n8n, e.g. a small web page to view past
-   dashboards, or storing each day's metrics for history?
+| Risk | Mitigation |
+| --- | --- |
+| Sheets row shape differs from n8n | Converter tested against captured n8n output |
+| Snapshots lost | Import twice, daily backups |
+| Different LLM than `gpt-5-mini` changes the tone or accuracy of the narrative | Compare during shadow week; Hermes can pin a model per cron job if needed |
+| Agent in `/aiconsult` runs other commands than intended | Only `qudamah-report context` on the approval allow list; skill says read-only |
+| Quick command 30 s timeout | Launcher detaches immediately (3.4) |
+| Hermes update changes cron/skill behaviour | Pin the Hermes version during shadow week; `hermes cron doctor` after every update |
+| Server clock not Jakarta | `timezone` in Hermes config **and** explicit zone in the CLI |
+
+---
+
+## 9. Open questions
+
+1. Is it **Hermes Agent by Nous Research**? (Plan assumes yes.) Which version
+   (`hermes --version`)? Features used: no-agent cron, pre-run scripts, skills,
+   quick commands, `hermes send` with `MEDIA:`.
+2. Which **model** does your Hermes use? Keep it, or pin `gpt-5-mini` for the
+   finance job so the output matches today?
+3. Should `/sales` and `/finance` reply in **whichever chat asked**, or always in the
+   one report chat? (Always-one-chat is simpler.)
+4. **Which bot** should the owner use after cutover: the existing Hermes bot or the
+   current n8n bot?
+5. Is **Node 20+** on the VPS, and can I get **n8n execution data and static data**
+   (API key or DB access) for the parity fixtures?
