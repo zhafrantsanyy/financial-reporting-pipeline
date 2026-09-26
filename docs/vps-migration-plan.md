@@ -1,509 +1,530 @@
-# Plan: running the pipeline on a VPS with Hermes Agent instead of n8n
+# Spec: Qudamah reporting on Hermes Agent (profile `qudamah`), replacing n8n
 
-Status: **plan only, nothing implemented yet.**
+Status: **specification, not implemented yet.** It is built on the VPS by the Hermes
+agent of the `qudamah` profile, one phase at a time, following the prompts in
+[`hermes-setup-guide.md`](hermes-setup-guide.md). Rules for the agent are in
+[`../AGENTS.md`](../AGENTS.md).
 
-Goal: the same three products (daily sales report, weekly financial pack,
-`/aiconsult` consultant) delivered over **WhatsApp from a dedicated bot number**, with n8n
-switched off. The VPS already runs [Hermes Agent](https://github.com/NousResearch/hermes-agent)
-(Nous Research), so Hermes takes over everything n8n did **around** the logic, and
-we only build the part Hermes cannot do: pulling Accurate and Sheets data and
-computing the numbers.
+Goal: the same three products as the n8n workflow (daily sales report, weekly
+financial pack, `/aiconsult` consultant), delivered over **WhatsApp from a dedicated
+bot number**, produced on the operator's VPS, with n8n switched off at the end.
 
-**Decisions so far**
+---
+
+## 0. Decisions
 
 | Topic | Decision |
 | --- | --- |
-| Hermes | Hermes Agent by Nous Research, **v0.21.5** (every feature used here was checked against the `rc.9-v0.21.5` source) |
-| Profile | New, blank profile `qudamah`; other profiles untouched |
-| Channel | WhatsApp, Baileys bridge, dedicated bot number |
-| Model | DeepSeek via OpenCode, configured in the `qudamah` profile only |
-| Dashboards | **PDF** (main attachment) **plus** the existing HTML |
-| Recipients | Testing: **6287720742631** only. More numbers added later in config |
-| Install location | **Everything inside the Hermes profile folder** (section 1.2) |
-| Node.js | Not on the VPS yet; installed once as part of the setup (section 1.2) |
+| Host | Existing VPS with **Hermes Agent v0.21.5** (Nous Research) |
+| Profile | New blank profile **`qudamah`** (no `--clone`); other profiles untouched |
+| Gateway | The existing **multiplexed host gateway** serves `qudamah` too (v0.21.5 refuses a per-profile gateway) |
+| Channel | WhatsApp, **Baileys bridge**, dedicated bot number, bridge port **3001** |
+| Model | **DeepSeek via OpenCode** (`opencode-go` or `opencode-zen`), set in this profile only |
+| Runtime | **Node.js, npm and Chromium managed by Hermes** (`hermes pm`); no system Node needed |
+| Dashboards | **PDF only** is sent (the HTML is still generated, as the PDF source and archive) |
+| Recipients | Testing: **6287720742631** only. Live: Qudamah owner + team (group recommended, section 8) |
+| Secrets | Entered by the operator into `$QR/.env` and `$QR/secrets/`, never through chat |
+| Install location | Everything inside the profile folder (section 3) |
 
 ---
 
-## 1. The split: what Hermes does, what we build
+## 1. Architecture
 
-| Job | Today in n8n | On the VPS |
+| Job | In n8n | On the VPS |
 | --- | --- | --- |
-| Chat bot (inbound commands, replies, allow list) | Telegram Trigger, `Baca Perintah`, `Rute Perintah`, 7 send nodes | **Hermes gateway of the new `qudamah` profile**, WhatsApp bot number (`WHATSAPP_ALLOWED_USERS` replaces `CHAT_DIIZINKAN`) |
-| Schedules 07:00 daily and Sunday 10:00 | 2 Schedule Triggers | **Hermes cron** with `timezone: "Asia/Jakarta"` |
-| Sending HTML dashboards as files | Convert to File + sendDocument | **`MEDIA:/path/file.html`** in the delivered text, or `hermes send` |
-| LLM (finance narrative, consultant) | OpenAI node, `gpt-5-mini`, 2 LangChain agents | **Hermes agent** with whatever model Hermes is configured for, prompts become **skills** |
-| Conversation memory for follow-ups | Window Buffer Memory, `lanjutan` mode | **Hermes sessions** (native, the `lanjutan` path disappears) |
-| "Working on it" acknowledgement | `Konfirmasi Terima` | Output of the `/sales` and `/finance` quick commands |
-| Accurate OAuth2, session, pagination, retry | 6 HTTP nodes | **We build**: `qudamah-report` CLI |
-| Google Sheets reads | 4 Sheets nodes + 2 merges | **We build**: `qudamah-report` CLI |
-| Metrics, P&L, balance sheet, dashboards, message chunking | 15 Code nodes | **We build**: ported almost unchanged into the CLI |
-| Balance snapshots (`$getWorkflowStaticData`) | n8n static data | **We build**: SQLite file owned by the CLI |
-
-Result: one deterministic command-line program that knows nothing about WhatsApp,
-schedules or LLMs, plus a few Hermes config entries, scripts and skills that call it.
-Roughly half the work of the earlier "standalone service" version of this plan.
+| Chat bot, allow list | Telegram Trigger, `Baca Perintah`, `Rute Perintah`, send nodes | Hermes gateway, WhatsApp adapter of profile `qudamah`, `WHATSAPP_ALLOWED_USERS` |
+| Mode resolution (`Tentukan Mode`) | Code node + IF gates | Gone: each cron job, quick command and skill already knows what it is for |
+| Schedules 07:00 daily, Sunday 10:00 | 2 Schedule Triggers | Hermes cron jobs, `timezone: Asia/Jakarta` |
+| "Working on it" reply | `Konfirmasi Terima` | Output of the `/sales` and `/finance` quick commands |
+| Sending report text + dashboard file | Telegram send nodes | Cron delivery: stdout text + `MEDIA:<pdf>` |
+| Finance narrative (LLM) | `AI Analis Finance` + OpenAI | Hermes agent cron job + skill `qudamah-finance` |
+| Consultant + memory | `AI Konsultan` + window memory, `lanjutan` path | Skill `aiconsult` + normal Hermes conversation |
+| Accurate, Sheets, metrics, P&L, dashboards, snapshots | 6 HTTP + 4 Sheets + 15 Code nodes, static data | **`qudamah-report` CLI (we build)** |
 
 ```
-                 ┌──────────────────────── Hermes Agent (already on VPS) ────────────────────────┐
- WhatsApp  ◀──▶  │ gateway ── quick commands /sales /finance ── skill /aiconsult ── cron jobs   │
-                 └───────┬───────────────────────┬────────────────────┬──────────────┬───────────┘
-                         │ bash script           │ terminal tool      │ pre-run      │ no-agent
-                         ▼                       ▼                    ▼ script       ▼ script
-                 ┌──────────────────────── qudamah-report (Node.js CLI, we build) ────────────────┐
-                 │ fetch Accurate + Sheets → ported Code-node logic → files in $QR/out/     │
-                 │ state: $QR/data/app.db (snapshots, run log, Accurate token)            │
-                 └───────────────────────────────────────────────────────────────────────────────┘
+            ┌──────────────── Hermes host gateway (already running) ────────────────┐
+ WhatsApp ◀▶│ profile qudamah: cron jobs · /sales /finance · /aiconsult skill        │
+            └──────┬──────────────────────┬───────────────────────┬─────────────────┘
+                   │ no-agent script      │ pre-run script        │ skill_view
+                   ▼                      ▼                       ▼ (read-only)
+            ┌──────────────── qudamah-report (Node CLI, we build) ───────────────────┐
+            │ Accurate + Sheets → ported Code-node logic → text, HTML, PDF, JSON     │
+            │ writes $QR/out/<date>/ and skills/aiconsult/references/konteks-terbaru │
+            │ state: $QR/data/app.db (snapshots, tokens, run log)                    │
+            └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1.1 A dedicated Hermes profile: `qudamah`
+---
 
-The automation runs in its **own Hermes profile**, not in your existing one.
+## 2. Hermes setup
 
-```bash
-hermes profile create qudamah          # blank: no memory, no bots, no cron copied
-qudamah setup                          # model: DeepSeek via OpenCode (opencode-zen or opencode-go)
-qudamah whatsapp                       # pair the new bot number (bot mode, scan QR)
-qudamah gateway install                # own systemd service (or served by the multiplexed gateway)
+### 2.1 Profile
+
+`hermes profile create qudamah` (blank). A profile has its own `config.yaml`, `.env`,
+`SOUL.md`, memory, sessions, skills, scripts, cron jobs, logs and WhatsApp session,
+so nothing leaks to or from the operator's other profiles. Not using `--clone`
+matters: clones copy `MEMORY.md` and `USER.md`.
+
+Profiles do not sandbox the filesystem. That is handled by toolsets (2.4).
+
+### 2.2 Gateway
+
+In v0.21.5 one **multiplexed host gateway** (started from the default profile)
+serves every profile. `qudamah gateway install/start` is refused by design. After
+WhatsApp pairing the operator runs `hermes gateway restart` (brief restart of the
+other bots too) and checks `hermes gateway status`. Isolation per profile is kept
+by the gateway: keys, allowlists, sessions, approvals, cron and logs are resolved
+from the profile's own files.
+
+### 2.3 WhatsApp
+
+- Baileys bridge, bot mode, dedicated number, paired with `qudamah whatsapp`.
+  The pairing wizard installs Hermes' Node if missing.
+- **`whatsapp.bridge_port: 3001`**, set before pairing. The bridge defaults to 3000,
+  and an adapter that finds a healthy bridge on its port adopts it: without this,
+  `qudamah` could end up talking through another profile's WhatsApp number.
+- `whatsapp.reply_prefix: ""` (no "☤ Hermes Agent" header on reports).
+- `whatsapp.unauthorized_dm_behavior: ignore` (strangers get silence, not a pairing code).
+- `WHATSAPP_ALLOWED_USERS=6287720742631` during testing.
+- Go-live options in section 8 (group recommended).
+
+### 2.4 Toolsets per platform
+
+| Surface | Toolsets | Why |
+| --- | --- | --- |
+| WhatsApp (`platform_toolsets.whatsapp`) | `skills`, `clarify` | Owner and team chat here. No terminal, file, code, browser, web, cron or delegation, so nobody can make the bot run commands on the VPS or read `.env`. `/aiconsult` reads its data with `skill_view` |
+| Cron (`platform_toolsets.cron`) | minimal (`skills`) | The finance job gets its data from the pre-run script |
+| CLI (`qudamah chat` over SSH) | default | Used by the operator to build and maintain |
+| Everywhere (`agent.disabled_toolsets`) | `memory` off | Build-session notes never reach WhatsApp chats, and one team member's chat never shows up in another's. Follow-ups still work: they use the session history |
+| Everywhere (`auxiliary.background_review.enabled: false`) | no background review | The post-turn review could otherwise save memory and create or edit skills (including `aiconsult`) from WhatsApp conversations; also saves tokens |
+
+### 2.5 Model
+
+DeepSeek via OpenCode, configured with `qudamah model`. The OpenCode API key goes
+into this profile's `.env` (same key as another profile is fine).
+
+---
+
+## 3. Folder layout
+
 ```
-
-What a profile isolates (everything lives under `~/.hermes/profiles/qudamah/`):
-`config.yaml`, `.env`, `SOUL.md`, memory, sessions, skills, `scripts/`, cron jobs,
-logs, WhatsApp session. So:
-
-- The report bot **never reads or writes the memory of your other profiles**, and
-  they never see Qudamah's figures. Do **not** use `--clone` / `--clone-all`
-  (those copy `MEMORY.md` and `USER.md` from the source profile).
-- Exception to check: if your existing profile uses an **external memory provider**
-  such as Honcho, a new profile can share the same user workspace. Leave memory on
-  the built-in provider for `qudamah`.
-- Profiles do **not** sandbox the filesystem. Set `terminal.cwd` to `$QR` so the
-  agent starts there, and keep the `/aiconsult` command allow list narrow.
-- Skills, scripts, quick commands and cron jobs from section 3 are installed into
-  **this profile only** (`hermes/install.sh` targets `-p qudamah`). Every Hermes
-  command in this plan is written as `qudamah ...`, which is `hermes -p qudamah ...`.
-  Inside scripts, deliveries use `hermes -p qudamah send --to whatsapp:+62...`.
-- `hermes update` is shared across profiles, so an update affects both; pin the
-  version during the shadow week.
-
-### 1.2 Everything installed inside Hermes
-
-All code, data and output live inside the profile, so "the Qudamah bot" is one
-folder. In this plan, `$QR` means:
-
-```
-$QR = ~/.hermes/profiles/qudamah/qudamah-report
-```
-
-```
-~/.hermes/profiles/qudamah/
-  config.yaml  .env  SOUL.md  memories/  sessions/  cron/      Hermes' own files
-  platforms/whatsapp/session/                                  WhatsApp pairing
-  skills/aiconsult/  skills/qudamah-finance/                   our skills
-  scripts/qudamah-*.sh                                         our cron + launcher scripts
-  qudamah-report/                                              ($QR) our CLI
-    app/          code (git checkout of this repo's app/ folder)
-    .env          Accurate + Google secrets, mode 600
-    data/app.db   balance snapshots, Accurate token, run log
-    out/<date>/   text chunks, PDF, HTML, JSON of each run
+~/.hermes/profiles/qudamah/                    ($QH)
+  config.yaml  .env  SOUL.md  memories/  sessions/  cron/  logs/     Hermes' own files
+  whatsapp/session/                                                 WhatsApp pairing
+  scripts/qudamah-*.sh                                              copied by install.sh
+  skills/aiconsult/  skills/qudamah-finance/                        copied by install.sh
+  qudamah-report/                              ($QR)
+    repo/            git checkout of this repository, branch hermes/migration
+      app/           the CLI (package.json, bin/, src/, tools/, test/, config/*.example.json)
+      hermes/        scripts/, skills/, SOUL.md, install.sh
+    bin/             wrappers: node, npm, qudamah-report (+ cached pm env)
+    .env             secrets, mode 600
+    secrets/         google-sa.json, mode 700/600
+    config/          app.json, sources.json (private: spreadsheet IDs, recipients)
+    data/            app.db, n8n-staticData.json
+    out/<date>/      outputs of each run
+    fixtures/<id>/   n8n executions for parity tests (real figures, never in git)
+    backup/          daily DB backups
     logs/
 ```
 
-Two consequences:
-
-- `hermes profile delete qudamah` would also delete `data/app.db`, which holds balance
-  snapshots that cannot be rebuilt. Daily backup of that file to somewhere outside
-  the profile is therefore mandatory (section 6).
-- Hermes only accepts cron scripts from `<profile>/scripts/`, which this layout
-  already satisfies.
-
-**Node.js.** Not installed yet. Install **Node 20 LTS** once (NodeSource apt repo or
-`nvm`), **before** `qudamah whatsapp`: Hermes' WhatsApp bridge is itself a Node.js
-program (needs Node 18+), so the bridge and our CLI share the same Node.
-
-**Setup order on the VPS** (all of it, start to finish):
-
-1. Install Node 20 LTS; `node -v`.
-2. `hermes profile create qudamah` (blank, no `--clone`).
-3. `qudamah setup` → provider OpenCode (`opencode-zen` or `opencode-go`), model DeepSeek.
-4. `qudamah whatsapp` → bot mode, scan QR with the **bot's** phone.
-5. Put `WHATSAPP_ALLOWED_USERS=6287720742631` in the profile `.env`; send "halo" from
-   6287720742631 to the bot number.
-6. `git clone` this repo into `$QR/app`, `npm ci`, install Chromium for PDF (2.6).
-7. `$QR/app/bin/qudamah-report auth accurate` (one-time login) and put the Google
-   service account JSON in `$QR/`.
-8. `$QR/app/hermes/install.sh` → copies skills and scripts into the profile, merges
-   `quick_commands` and `timezone` into `config.yaml`, creates the cron jobs.
-9. `qudamah gateway install` (or restart the multiplexed gateway) and run
-   `qudamah cron doctor`.
-
-### 1.3 WhatsApp bridge
-
-WhatsApp choice: the **Baileys bridge** (bot mode, QR pairing, no Meta account) fits a
-single owner plus a few team members. The official **WhatsApp Cloud API** has no ban
-risk but needs a Meta Business account, a public HTTPS webhook, and it cannot send
-free-form messages 24 h after the user's last message, which would block the 07:00
-report on days nobody chatted. Recommendation: Baileys with a dedicated number.
+- Private data never enters `repo/`, so it cannot be committed by accident.
+- `hermes profile delete qudamah` would delete `data/app.db`. The balance snapshots
+  in it cannot be rebuilt (Accurate's GL endpoint has no date filter), hence the
+  daily backup job and the advice to copy `backup/` off the box.
+- `$QR/out` is added to `gateway.media_delivery_allow_dirs` so PDF attachments are
+  accepted even if the operator turns on strict media delivery later.
 
 ---
 
-## 2. The `qudamah-report` CLI (what we build)
+## 4. Runtime
 
-### 2.1 Commands
+- `hermes pm install node npm chromium`. The v0.21.5 lock pins Node 26.7.0, npm
+  12.0.2 and Chromium 145 (Playwright layout, revision 1208). Do not hardcode versions.
+- `hermes pm env node npm chromium` prints JSON with `PATH` and
+  `PLAYWRIGHT_BROWSERS_PATH`. `$QR/bin/node`, `$QR/bin/npm` and
+  `$QR/bin/qudamah-report` read it (cached in `$QR/bin/.pm-env`, re-resolved when a
+  path disappears after `hermes update`), falling back to `node` on `PATH`.
+- `TZ` in the wrappers is set to whatever the parity tests show the n8n server used
+  (UTC or Asia/Jakarta). Business dates are always computed in Asia/Jakarta.
+- Dependencies (pure JS only): `luxon`, `playwright-core`, `google-auth-library`
+  (or `googleapis`). Storage uses built-in `node:sqlite`; HTTP uses built-in `fetch`.
+- Chromium needs system libraries. If they are missing, the agent reports the apt
+  packages and the operator installs them.
 
-| Command | Does | Writes |
-| --- | --- | --- |
-| `qudamah-report sales` | Fetch everything, compute sales metrics + dashboard | `out/<date>/sales-1.txt, sales-2.txt, ...`, `SalesHarianQudamah.pdf` + `.html`, `metrics.json` |
-| `qudamah-report finance` | Fetch everything, compute P&L + balance sheet + dashboard | `LaporanFinansialQudamah.pdf` + `.html`, `finance-payload.json` (the `Siapkan Payload Finance` output, `dataQuality` first) |
-| `qudamah-report context [--max-age 6h]` | Print the consultant context (sales + finance, truncated at 14,000 chars like today). Reuses the latest run if fresh, otherwise refreshes | stdout |
-| `qudamah-report deliver sales\|finance` | Run the above and push results with `hermes send` (text chunks in order, then the PDF, then the HTML) to every number in `recipients` | WhatsApp |
-| `qudamah-report auth accurate` | One-time OAuth2 login, stores refresh token | `data/app.db` |
-| `qudamah-report import-static <file>` | Import n8n static data (balance snapshots) | `data/app.db` |
-| `--dry` on any command | Never writes snapshots, never sends | |
+---
 
-Every run computes finance too, so the daily balance snapshot keeps accumulating,
-exactly like the current "finance always runs, only delivery is gated" rule.
+## 5. The `qudamah-report` CLI
 
-### 2.2 Why Node.js
+### 5.1 Commands
 
-The 15 Code nodes (about 4,000 lines) are already JavaScript and touch very little
-n8n API: `$input` (11 nodes), `$('Node')` (7), `$json`, `$now`, `$execution` and
-`$getWorkflowStaticData`. Keeping JS means the logic ports nearly verbatim. Hermes
-is Python, but it only calls our CLI through bash, so the languages never mix.
-Node is not on the VPS yet; it is installed in setup step 1 (section 1.2) and
-is needed anyway by Hermes' WhatsApp bridge.
-
-### 2.3 Layout (in this repo, under `app/`)
-
-```
-app/
-  package.json
-  bin/qudamah-report.js
-  config/
-    sources.json          spreadsheets + tabs per period (replaces the 4 Sheets nodes)
-    app.json              recipients (test / live), limits, paths, attachHtml
-    coa-mapping.json      chart of accounts mapping (moved out of code, after parity)
-  src/
-    pipeline/run.js       the old 61-node graph as one async function
-    clients/accurate.js   token refresh, db-list/open-db, paginate, retry
-    clients/sheets.js     service account + n8n-compatible row shape
-    store/db.js           SQLite: kv (snapshots), runs, tokens
-    logic/*.js            one file per ported Code node
-  test/parity/            per-node tests against captured n8n data
-    render/pdf.js         HTML → PDF with headless Chromium (2.6)
-hermes/                   everything that gets copied into ~/.hermes/profiles/qudamah
-  scripts/qudamah-sales.sh
-  scripts/qudamah-finance-precheck.sh
-  scripts/qudamah-launch.sh
-  skills/aiconsult/SKILL.md
-  skills/qudamah-finance/SKILL.md
-  config.snippet.yaml     quick_commands + timezone to merge into config.yaml
-  install.sh              copies the above, creates the cron jobs
-```
-
-Secrets live in `$QR/.env` (mode 600), read by the CLI itself. This matters:
-Hermes **strips credentials from the environment of cron scripts**, so the CLI must
-not depend on inherited env vars.
-
-### 2.4 Integrations inside the CLI
-
-**Accurate Online**
-- `auth accurate` runs the authorization code flow once (prints the authorize URL,
-  you paste back the code), stores `access_token`, `refresh_token`, expiry.
-- Refresh before each run if expiring within 24 h, and once on any 401.
-- `db-list.do` → `open-db.do?id=<d[0].id>` → `host` + `session`. Throw if no host.
-- The four list calls use the query strings from the workflow JSON **verbatim**:
-
-  | Call | `fields` | Filter |
-  | --- | --- | --- |
-  | Stok item | `id,no,name,itemType,quantity,availableToSell,unit1Name` | `itemType EQUAL INVENTORY` |
-  | Invoice MTD | `id,number,transDate,totalAmount,statusName` | `transDate BETWEEN tglAwalBulan..tglKemarin` |
-  | Invoice 30 hari | `id,transDate,detailItem` | `transDate BETWEEN tglAwalVelocity..tglKemarin` |
-  | GL account | `id,no,name,accountType,balance` | none |
-
-  `sp.pageSize=100`, `X-Session-ID` header, stop when `d` is empty, max 50 pages,
-  300 ms between pages, 3 attempts, and on final failure return empty data plus a
-  warning (today's `continueRegularOutput`). All four run in parallel.
-
-**Google Sheets**
-- Service account, both spreadsheets shared with its email as Viewer.
-- Tabs listed in `config/sources.json`; adding a month is one config line.
-- **Highest parity risk.** The parsers depend on the exact item shape the n8n Sheets
-  node emits (header row as keys, naming of blank or duplicate headers, numbers vs
-  formatted strings, the `6.502` issue, `row_number`). The converter is tested
-  against captured n8n output before anything else is trusted.
-
-### 2.5 Porting the Code nodes
-
-Same two-step method as before:
-
-1. **Wrap, do not rewrite.** Each node body goes into a function that receives a tiny
-   shim (`$input.all()`, `$('Name').first()`, `$now`). Parity tests must pass.
-2. **Then clean up** file by file, re-running parity after each change.
-
-Nodes that change meaning or disappear with Hermes:
-
-| Node | Fate |
+| Command | Does |
 | --- | --- |
-| `Baca Perintah`, `Rute Perintah`, `Tentukan Mode` | **Gone.** Hermes routes commands; each CLI command already knows its mode. |
-| `Siapkan Payload Konsultasi` | Becomes the `context` command. |
-| `Pecah Pesan Sales` | Kept. Chunks are sent in order by `deliver`, so the 3,800-char split stays exact. |
-| `Hitung Laba Rugi & Neraca` | `$getWorkflowStaticData` → SQLite `kv`, written only at the end of a successful non-dry run. |
-| `Siapkan Sesi dan Tanggal` | `$now` → Luxon with `Asia/Jakarta`, injectable for tests. |
-| All others | Ported unchanged. |
+| `doctor` | Node version, Chromium found, `.env` keys set/MISSING, SA file, DB writable, config valid, Accurate token age |
+| `auth accurate` | One-time OAuth2 login (5.3), stores tokens in the DB |
+| `export-n8n` | Downloads n8n executions and static data (5.5) |
+| `import-static [file]` | Loads n8n static data (`snapshotAkun`, `snapshotAwal`) into the DB |
+| `sales [--dry] [--print]` | Full run; writes outputs; `--print` for the daily cron (5.8) |
+| `finance [--dry] [--print]` | Full run; writes outputs; `--print` for the weekly cron pre-run (5.8) |
+| `context` | Prints the consultant context of the latest run (debug) |
+| `compare-n8n [--print]` | Shadow-week check of today's numbers against n8n's latest execution |
+| `backup` | `VACUUM INTO $QR/backup/app-YYYYMMDD.db`, keep 30; silent on success |
 
-### 2.6 PDF output
+Every run (`sales` or `finance`) fetches everything and computes both sales and
+finance, exactly like n8n: finance runs every time so the daily balance snapshot
+keeps accumulating. Snapshots are written only by a successful non-`--dry` run.
+A lock file prevents two runs at once. Exit codes: `0` ok (possibly degraded, with
+warnings in the report), `1` fatal, `2` configuration error.
+The file `$QR/data/FORCE_FAIL` (or `QUDAMAH_FORCE_FAIL=1` in a shell) makes a run fail
+on purpose to test failure alerts; a file is needed because cron scripts do not
+inherit the caller's environment.
 
-Each dashboard is produced twice from the same HTML string: the `.html` as today,
-and a `.pdf` for WhatsApp, where PDFs open in the phone's built-in viewer. (The
-WhatsApp bridge sends `.pdf` as a proper `application/pdf` document; `.html` goes out
-as a generic file.)
+### 5.2 Secrets and config
 
-- **Renderer:** `puppeteer-core` driving headless **Chromium** (`apt install chromium`
-  or Puppeteer's bundled download). Output A4 portrait, `printBackground: true` so
-  the card colours survive. Chromium uses about 300 MB RAM for a few seconds per render.
-- **Tabs problem:** the dashboards use radio buttons + CSS for tabs, so a naive print
-  would show only the first tab. The renderer injects a print stylesheet that shows
-  **every tab panel stacked**, hides the tab bar, adds each tab's name as a section
-  heading, and puts a page break between sections and `break-inside: avoid` on cards
-  and table rows.
-- **Header/footer:** "Qudamah · Laporan Sales Harian · <tanggal>" and page `n / N`.
-- **Never blocks a report:** if PDF rendering fails, the text and HTML are still
-  sent, with a one-line note that the PDF is missing, and the error is logged.
-- **Test:** parity tests only cover the HTML; the PDF gets a visual check during the
-  shadow week (open on a phone, compare with the HTML).
-- `attachHtml` in `config/app.json` (default `true`) lets you drop the HTML later if
-  the PDF alone is enough.
+`$QR/.env` (names only, the operator fills values):
 
-### 2.7 Recipients
+```
+ACCURATE_CLIENT_ID=
+ACCURATE_CLIENT_SECRET=
+ACCURATE_SCOPE=                 # copied from the n8n Accurate credential
+ACCURATE_REDIRECT_URI=http://localhost:8765/callback
+ACCURATE_AUTH_URL=https://account.accurate.id/oauth/authorize
+ACCURATE_TOKEN_URL=https://account.accurate.id/oauth/token
+GOOGLE_SA_PATH=<absolute path of $QR/secrets/google-sa.json>
+N8N_BASE_URL=                   # e.g. https://n8n.example.com
+N8N_API_KEY=
+N8N_WORKFLOW_ID=
+```
 
-`config/app.json` holds the numbers, separate from code:
+`$QR/config/app.json`:
 
 ```json
 {
   "recipients": {
     "mode": "test",
-    "test": ["6287720742631"],
-    "live": []
-  }
+    "test": ["whatsapp:+6287720742631"],
+    "live": [],
+    "failure": "whatsapp:+6287720742631"
+  },
+  "pdf": { "enabled": true, "format": "A4" }
 }
 ```
 
-`deliver` sends to every number of the active list. Going live, or adding team
-members, is a config edit plus the same numbers in `WHATSAPP_ALLOWED_USERS` (and each
-new person sends one message to the bot first).
+`$QR/config/sources.json`: the VS and META ADS tabs per period (spreadsheet ID,
+sheet name, gid, label). Tab names and gids come from the workflow JSON; IDs from
+the operator. Adding a month = adding an entry. Templates live in
+`app/config/*.example.json`.
 
----
+### 5.3 Accurate Online
 
-## 3. The Hermes side
+- `auth accurate`: prints the authorize URL (client id, `ACCURATE_REDIRECT_URI`,
+  `ACCURATE_SCOPE`, a random `state`). The operator opens it on a laptop, logs in,
+  lands on `http://localhost:8765/callback?code=...` (the page fails to load, that is
+  expected) and pastes the full URL back. The CLI checks `state`, exchanges the code
+  at `ACCURATE_TOKEN_URL` and stores access token, refresh token and expiry. The
+  redirect URI must be registered on the Accurate OAuth app beforehand. Token
+  endpoint details (Basic auth, body fields) must match what the n8n credential used.
+- Refresh before each run when the token expires within 24 h, and once on a 401.
+  A dead refresh token produces a clear error naming `auth accurate`.
+- Session: `db-list.do`, then `open-db.do?id=<d[0].id>` gives `host` + `session`.
+  Throw if there is no host (same as `Siapkan Sesi dan Tanggal`).
+- Four list calls with query parameters copied **verbatim** from the workflow JSON
+  (`Accurate Stok Item`, `Accurate Sales Invoice MTD`, `Accurate Invoice 30 Hari
+  Detail`, `Accurate GL Account List`): `sp.pageSize=100`, `X-Session-ID` header,
+  stop when `d` is empty, at most 50 pages, 300 ms between pages, 3 attempts, and on
+  final failure an empty result plus a warning (n8n's `continueRegularOutput`).
+- Output shape identical to n8n: one item per page, `{ json: { s, d: [...] } }`.
 
-### 3.1 Settings (`~/.hermes/profiles/qudamah/config.yaml` and `.env`)
+### 5.4 Google Sheets
 
-```yaml
-timezone: "Asia/Jakarta"          # cron schedules and agent clock
+- Service account (read-only scope), both spreadsheets shared with its email as Viewer.
+- The four tabs are read and converted by `rowsToN8nItems()` into exactly the item
+  shape the n8n Google Sheets node produced. The rules (header naming, `row_number`,
+  blank cells, number vs string, value render option) are derived from the fixtures
+  of `Sheet VS Juli`, `Sheet VS Sept`, `Meta ads Juli`, `Sheet Meta ads Sept1`.
+  **Highest parity risk**: wrong shapes give wrong totals without errors.
+- VS tabs and META ADS tabs stay two separate streams, each to its own parser.
 
-quick_commands:
-  sales:
-    type: exec
-    command: bash ~/.hermes/profiles/qudamah/scripts/qudamah-launch.sh sales
-  finance:
-    type: exec
-    command: bash ~/.hermes/profiles/qudamah/scripts/qudamah-launch.sh finance
+### 5.5 n8n export
+
+- `GET {N8N_BASE_URL}/api/v1/workflows/{id}` with `X-N8N-API-KEY`: save `staticData`
+  to `$QR/data/n8n-staticData.json`. If the API does not return it, stop and report
+  (fallbacks: n8n CLI export or the n8n database).
+- `GET /api/v1/executions?workflowId=...&status=success&includeData=true` (paged):
+  keep the 3 latest daily-schedule runs, 2 latest weekly-schedule runs, and 1
+  `/finance` and 1 `/aiconsult` run when present. The run type comes from the
+  trigger node present in `runData`.
+- Store per execution: `$QR/fixtures/<executionId>/runData.json` (the whole
+  `data.resultData.runData`) and `meta.json` (startedAt, mode, run type, nodes run).
+
+### 5.6 Porting the Code nodes
+
+1. `app/tools/wrap-code-nodes.mjs` generates `app/src/logic/<slug>.js` from every
+   `src/code-nodes/<slug>.js`, **unchanged**, as:
+   `export default function run({ $input, $, $json, $now, $execution, $getWorkflowStaticData }) { <original body> }`
+   (the bodies end with `return [...]`, which works inside a function).
+2. `app/src/n8n-shim.js` provides those arguments: `$input.all()/first()` from given
+   items, `$('Node Name').all()/first()` from a map of named node outputs (throws
+   like n8n when a node did not run, since the originals rely on `try/catch`),
+   `$now` as a Luxon DateTime in Asia/Jakarta, `$execution.mode`, and
+   `$getWorkflowStaticData('global')` backed by the DB (tests: an in-memory copy).
+3. Nodes whose job disappears with Hermes (`Baca Perintah`, `Tentukan Mode`,
+   `Pecah Pesan Sales`) are still wrapped and parity-tested, but not used by the
+   pipeline. `Tentukan Mode`'s output is supplied by the shim where other nodes read
+   it (`Siapkan Payload Konsultasi` gets `{ mode: 'konsultasi', pertanyaan: '' }`).
+4. Clean-ups are allowed only after parity is green, one file at a time, with parity
+   re-run after each.
+
+### 5.7 Pipeline (`app/src/pipeline/run.js`)
+
+```js
+async function run({ now, dry, kv }) {
+  const sesi = await accurate.openSession();                       // db-list, open-db
+  const tgl  = logic.siapkanSesiDanTanggal({ input: sesi, now });
+  const [invMtd, inv30, stokRaw, glRaw, vsRows, adsRows] = await Promise.all([
+    accurate.list('sales-invoice', mtdQuery(tgl)),
+    accurate.list('sales-invoice', velocityQuery(tgl)),
+    accurate.list('item', stokQuery),
+    accurate.list('glaccount', glQuery),
+    sheets.read(sources.vs),
+    sheets.read(sources.ads),
+  ]);
+  const stok      = logic.filterItemCategory(stokRaw);
+  const sales     = logic.normalisasiSales(vsRows);
+  const ads       = logic.normalisasiAds(adsRows);
+  const marketing = logic.laporanMarketing([sales, ads]);
+  const mtd       = logic.hitungPenjualanMtd(invMtd, { tgl });
+  const fin       = logic.hitungLabaRugiNeraca(glRaw, { tgl, mtd, staticData: kv });
+  const metrik    = logic.hitungMetrikHarian({ tgl, invMtd, inv30, stok, sales, ads, marketing });
+  const htmlSales = logic.dashboardSalesHtml({ ...same inputs as in n8n });
+  const htmlFin   = logic.dashboardFinansialHtml(fin);
+  const payloadFin = logic.siapkanPayloadFinance(fin);
+  const context   = logic.siapkanPayloadKonsultasi({ metrik, fin });
+  if (!dry) kv.saveSnapshots();
+  return { metrik, fin, htmlSales, htmlFin, payloadFin, context };
+}
 ```
 
-```bash
-# ~/.hermes/profiles/qudamah/.env
-WHATSAPP_ENABLED=true
-WHATSAPP_MODE=bot
-WHATSAPP_ALLOWED_USERS=6287720742631   # testing; add owner/team later, comma-separated, no +
+Every node receives exactly the inputs and named-node outputs it had in n8n
+(connections in the workflow JSON), through the shim. The merges disappear.
+
+### 5.8 Output contract
+
+Files per run in `$QR/out/<YYYY-MM-DD>/`: `sales.txt` (the `pesan` field of
+`Hitung Metrik Harian`), `SalesHarianQudamah.html/.pdf`,
+`LaporanFinansialQudamah.html/.pdf`, `metrics.json`, `finance.json`,
+`finance-payload.json`, `context.json`, `run.json` (timings, warnings).
+
+Every run also rewrites `$QH/skills/aiconsult/references/konteks-terbaru.md`:
+a header with the data timestamp (WIB) and the run type, then the
+`Siapkan Payload Konsultasi` payload as a JSON block.
+
+`sales --print` (stdout of the daily no-agent cron job, delivered verbatim):
+
+```
+<sales report text>
+
+MEDIA:/home/.../qudamah-report/out/2026-09-28/SalesHarianQudamah.pdf
 ```
 
-Replaces `BATASI_KE_DAFTAR_IZIN` / `CHAT_DIIZINKAN`, and is on from day one. Today
-the n8n bot answers anyone, which leaks the P&L.
+If the PDF failed: the text, then `(PDF tidak tersedia hari ini: <alasan singkat>)`,
+no `MEDIA:` line, exit 0.
 
-### 3.2 Daily sales, 07:00 (no LLM)
+`finance --print` (stdout of the weekly pre-run script, injected into the prompt):
 
-A **no-agent** cron job: zero tokens, just our script.
-
-```bash
-qudamah cron create "0 7 * * *" --no-agent --script qudamah-sales.sh \
-  --deliver local --failure-deliver whatsapp:+6287720742631 \
-  --name "qudamah-sales-harian"
+```
+TANGGAL_HARI_INI: 28 September 2026
+DATA_DIAMBIL: 2026-09-28T10:00:41+07:00
+PDF_PATH: /home/.../qudamah-report/out/2026-09-28/LaporanFinansialQudamah.pdf
+PAYLOAD_JSON:
+{"dataQuality": ..., "periode": ..., ...}
 ```
 
-`qudamah-sales.sh` runs `qudamah-report deliver sales`, which sends the text chunks,
-then the PDF, then the HTML to each recipient via `hermes -p qudamah send`
-(`MEDIA:$QR/out/<date>/SalesHarianQudamah.pdf`), and prints nothing. Empty stdout = no extra message, a non-zero exit = Hermes sends
-an error alert, so a broken run can never fail silently.
+(`PDF_PATH: TIDAK_ADA` when the PDF failed.)
 
-(Why `hermes send` inside the script instead of printing the report to stdout:
-the daily report is often longer than one WhatsApp message (Hermes splits at 4,096 chars), and sending the chunks
-ourselves keeps the `(1/3)` split and the order exactly as today.)
+### 5.9 PDF
 
-### 3.3 Weekly finance, Sunday 10:00 (LLM)
+- `playwright-core` driving Hermes' Chromium (`executablePath` under
+  `PLAYWRIGHT_BROWSERS_PATH`), `--no-sandbox` only when running as root.
+- A4 portrait, `printBackground: true`, header `Qudamah · <judul> · <tanggal>`,
+  footer `halaman n / N`.
+- The dashboards use radio inputs + CSS for tabs, so a plain print shows only the
+  first tab. A print stylesheet is **injected at render time** (the HTML generators
+  stay untouched): every tab panel visible and stacked, each preceded by its tab
+  name as a heading, the tab bar hidden, a page break between panels,
+  `break-inside: avoid` on cards and table rows.
+- A render failure never blocks the report (5.8).
 
-An **agent** cron job with a pre-run script and a skill:
+### 5.10 Shadow-week comparison
 
-```bash
-qudamah cron create "0 10 * * 0" \
-  --script qudamah-finance-precheck.sh \
-  --skill qudamah-finance \
-  --deliver whatsapp:+6287720742631 \
-  --name "qudamah-finance-mingguan" \
-  "Tulis analisis finansial mingguan dari payload yang diberikan."
-```
-
-- `qudamah-finance-precheck.sh` runs `qudamah-report finance`, prints
-  `finance-payload.json` as the job's context. If the run failed, it prints
-  `{"wakeAgent": false}` after sending an error message, so no tokens are spent on
-  empty data.
-- Skill `qudamah-finance` = today's `src/prompts/ai-analis-finance.md` (system rules:
-  read `dataQuality` first, flag `penyusutanNol`, no P&L when `layakDilaporkan` is
-  false) plus one line: end the answer with
-  `MEDIA:$QR/out/<date>/LaporanFinansialQudamah.pdf` and
-  `MEDIA:$QR/out/<date>/LaporanFinansialQudamah.html` so both files are attached to
-  the same delivery. More recipients later: `--deliver` takes a comma-separated list.
-- The "only `<b> <i> <code> <a>`" rule in the prompt is dropped: Hermes' WhatsApp
-  adapter converts Markdown to WhatsApp formatting, so the prompt asks for plain
-  Markdown instead.
-
-### 3.4 `/sales` and `/finance` on demand
-
-Quick commands time out after **30 seconds** and a report takes about a minute, so
-`qudamah-launch.sh` starts the job in the background and returns at once:
-
-```bash
-#!/usr/bin/env bash
-# replies instantly (this text is the old "Konfirmasi Terima"), work continues detached
-setsid nohup $QR/bin/qudamah-report deliver "$1" >>$QR/logs/launch.log 2>&1 &
-echo "Siap. Menyiapkan laporan $1, mohon tunggu sekitar satu menit."
-```
-
-A lock file in the CLI stops a second `/finance` from starting while one runs.
-`/finance` on demand then reuses the same path as the cron job: easiest is
-`qudamah cron run <finance job id>` from the launcher, so the narrative is written by
-the same skill.
-
-Delivery goes to the `recipients` list (during testing: 6287720742631 only).
-
-### 3.5 `/aiconsult` (LLM, conversational)
-
-A Hermes **skill named `aiconsult`**, so `/aiconsult <question>` works directly:
-
-- Content = today's `src/prompts/ai-konsultan.md`, plus: "first run
-  `qudamah-report context --max-age 6h` with the terminal tool and answer only from
-  that data; if data quality flags a caveat, say so".
-- Follow-up replies are just the ongoing Hermes conversation, so memory and the old
-  `lanjutan` fast path come for free.
-- Allow the command `qudamah-report context` in Hermes' command approval list so the
-  agent does not stop to ask permission on WhatsApp.
-- Usually answers from the 07:00 run, which is seconds, instead of re-fetching
-  everything like n8n did.
+`compare-n8n --print`: fetch n8n's latest successful daily execution, compare the key
+figures of `Hitung Metrik Harian` and `Hitung Laba Rugi & Neraca` with today's
+`metrics.json` / `finance.json`, print a short list of equal / different fields
+(with both values, this goes only to the operator's test number).
 
 ---
 
-## 4. Testing and parity
+## 6. Hermes wiring (`hermes/install.sh`, idempotent)
 
-1. **Capture fixtures from n8n first.** Export 3 to 5 real executions (a daily, a
-   weekly, an `/aiconsult`) and save each Code node's input and output as JSON under
-   `app/test/fixtures/`. These contain real figures, so the folder is **git-ignored
-   and never pushed**.
-2. **Parity per node:** fixture in, deep-equal fixture out, date frozen.
-3. **Sheets converter:** API rows → n8n item shape equal to the captured Sheets output.
-4. **Accurate client:** mocked HTTP for pagination stop, 50-page cap, 3 retries,
-   graceful empty result.
-5. **Dry runs on the VPS:** `qudamah-report sales --dry`, then open the files in
-   `out/` and compare to what n8n sent that morning.
-6. **Hermes side:** `qudamah cron run <id>` for each job, delivering to
-   **6287720742631**; `qudamah cron doctor` clean.
-7. **PDF check:** open both PDFs on the test phone; every tab present, nothing cut
-   between pages, numbers identical to the HTML.
+### 6.1 Cron jobs (targets read from `$QR/config/app.json`)
 
----
+| Name | Schedule | Kind | Script / skill | Delivers |
+| --- | --- | --- | --- | --- |
+| `qudamah-sales-harian` | `0 7 * * *` | `--no-agent` | `qudamah-sales.sh` | recipients; failures to `failure` |
+| `qudamah-finance-mingguan` | `0 10 * * 0` | agent | `--script qudamah-finance-context.sh`, `--skill qudamah-finance` | recipients; failures to `failure` |
+| `qudamah-backup` | `30 23 * * *` | `--no-agent` | `qudamah-backup.sh` | `local`; failures to `failure` |
+| `qudamah-bandingkan-n8n` | `30 7 * * *` | `--no-agent` | `qudamah-compare.sh` | `failure` target only; removed at go-live |
 
-## 5. Cutover
+Finance job prompt: `Tulis analisis finansial mingguan Qudamah dari data di atas,
+ikuti skill qudamah-finance.` The weekday of the n8n weekly trigger is confirmed from
+the workflow JSON before creating the job (the README says Sunday).
 
-The new `qudamah` profile has its own WhatsApp number, separate from both the n8n
-Telegram bot and your other Hermes profiles, so everything can run side by side.
+### 6.2 Scripts (`hermes/scripts/`, copied to `$QH/scripts/`)
 
-1. **Owner messages the bot number first.** The WhatsApp bridge warns against
-   automated messages to people who never wrote to the bot; one "halo" from the
-   owner and each team member before go-live keeps the number safe.
-2. **Import snapshots.** Get n8n static data (`snapshotAkun`, `snapshotAwal`) via the
-   n8n API (`GET /api/v1/workflows/<id>` → `staticData`) or its database, then
-   `qudamah-report import-static`. Without this the first month has no finance baseline.
-3. **Shadow week.** Hermes cron jobs deliver to 6287720742631 for 7 days including one
-   Sunday while n8n keeps serving the owner. Compare text, HTML and PDF files, and
-   `diagnostikNeraca` daily.
-4. **Switch day.** Deactivate the n8n workflow, re-import static data one last time
-   (it kept changing during the shadow week), set `recipients.mode` to `live` with the
-   owner/team numbers (and the same numbers in `WHATSAPP_ALLOWED_USERS` and the
-   finance job's `--deliver`), run `/sales` and `/finance` once by hand.
-5. **Rollback** in minutes: `qudamah cron pause` both jobs, reactivate n8n. Keep n8n
-   installed for a month.
+- `qudamah-sales.sh`: `exec $QR/bin/qudamah-report sales --print`
+- `qudamah-finance-context.sh`: `exec $QR/bin/qudamah-report finance --print`
+  (non-zero exit on failure, so the LLM never runs on missing data)
+- `qudamah-launch.sh sales|finance`: for quick commands. Starts
+  `hermes -p qudamah cron run <job id>` detached (`setsid nohup ... &`), prints
+  `Siap. Laporan <sales|finance> sedang disiapkan, sekitar 1 menit. Hasilnya dikirim ke penerima laporan.`
+  and exits within a second (quick commands time out at 30 s).
+- `qudamah-backup.sh`, `qudamah-compare.sh`
+- Absolute paths only (resolved by `install.sh`): `hermes`, `$QR/bin/qudamah-report`.
 
----
+### 6.3 Quick commands
 
-## 6. Operations
+`quick_commands.sales` and `quick_commands.finance`, type `exec`, running
+`bash $QH/scripts/qudamah-launch.sh sales|finance`. Reports go to the cron job's
+recipients, not necessarily to whoever typed the command.
 
-- **Backups (mandatory):** daily `sqlite3 app.db ".backup"` of `$QR/data/app.db`
-  to a folder **outside the profile** and off the box, because deleting the profile
-  deletes the data. The snapshots cannot
-  be rebuilt, because Accurate's GL endpoint has no date filter.
-- **Failures:** non-zero exit from any script → Hermes delivers an error alert.
-  The CLI also logs every run to the `runs` table and `$QR/logs/`.
-- **Accurate login expiry** is the most likely real-world failure; the error message
-  names the fix (`qudamah-report auth accurate`).
-- **Updates:** `git pull` in `$QR/app`, `npm ci`, re-run `hermes/install.sh`.
-- **Hermes version:** stay on v0.21.5 until the shadow week is signed off; after any
-  `hermes update`, run `qudamah cron doctor` and one `/sales`.
-- **Model cost:** daily report now costs zero tokens; only the weekly narrative and
-  `/aiconsult` use the model.
+### 6.4 Skills (`hermes/skills/`, copied to `$QH/skills/`)
 
----
+- **`aiconsult`** (so `/aiconsult <pertanyaan>` works): the content rules of
+  `src/prompts/ai-konsultan.md` (read availability first, never invent figures,
+  say what is missing and why). First step: load
+  `references/konteks-terbaru.md` with `skill_view`, state the data timestamp, and
+  if it is older than 24 h say so and suggest `/sales` to refresh. Follow-up replies
+  are plain conversation. Format: WhatsApp (`*tebal*`, `_miring_`, short lists, no
+  tables, no headings), replacing the old Telegram HTML rule.
+- **`qudamah-finance`**: the content rules of `src/prompts/ai-analis-finance.md`
+  (`dataQuality` first, `penyusutanNol`, no P&L when `layakDilaporkan` is false,
+  max 400 words, the four sections), WhatsApp format, and: the **last line** of the
+  answer must be exactly `MEDIA:<PDF_PATH>` from the injected data (omit it when
+  `PDF_PATH: TIDAK_ADA`).
 
-## 7. Phases and effort
+### 6.5 `SOUL.md` of the profile
 
-| # | Phase | Output | Estimate |
-| --- | --- | --- | --- |
-| 0 | Capture fixtures + static data from n8n; install Node 20, create `qudamah` profile, pair WhatsApp number, allow 6287720742631 | Fixtures, `staticData.json`, bot answers "halo" | 0.5 day |
-| 1 | CLI skeleton, config, SQLite, logging | `qudamah-report --help` | 0.5 day |
-| 2 | Accurate + Sheets clients | Real data fetched with `--dry` | 1.5 days |
-| 3 | Port 12 remaining Code nodes behind the shim, parity green | `logic/`, tests | 2 days |
-| 4 | `sales`, `finance`, `context`, `deliver` commands | Files in `out/`, WhatsApp test sends | 0.5 day |
-| 4b | PDF renderer with print stylesheet for both dashboards | `.pdf` next to each `.html` | 1 day |
-| 5 | Hermes scripts, skills, quick commands, cron jobs, `install.sh` | Everything firing into a test chat | 1 day |
-| 6 | Shadow week | Daily comparison | 7 days elapsed, ~1 day work |
-| 7 | Cutover + docs update | n8n off | 0.5 day |
+Qudamah's report assistant: Indonesian, concise, answers only from report data,
+never reveals secrets, file paths, server or configuration details, declines
+requests unrelated to Qudamah's business reports.
 
-About **7 to 8 working days** plus the shadow week.
+### 6.6 Config keys set by `install.sh` (`hermes -p qudamah config set ...`)
+
+`timezone`, `quick_commands.*`, `platform_toolsets.whatsapp`,
+`platform_toolsets.cron`, `gateway.media_delivery_allow_dirs`, `whatsapp.bridge_port`,
+`whatsapp.reply_prefix`, `whatsapp.unauthorized_dm_behavior`. WhatsApp access
+variables (`WHATSAPP_*`) are set in the profile `.env` through `config set` too.
+Changes that need a gateway restart are reported to the operator, never applied by
+restarting on its own.
+
+### 6.7 `install.sh`
+
+Copies scripts (chmod +x) and skills, writes `SOUL.md`, sets config keys, creates
+the cron jobs when missing and updates their schedule/targets when present
+(looked up by name), prints `qudamah cron list`. Safe to run again after every
+config change (for example switching `recipients.mode` to `live`).
 
 ---
 
-## 8. Risks
+## 7. Tests
+
+1. **Parity per Code node** against every fixture execution: input = the parent
+   node's output in `runData`, `$()` = that execution's `runData`, `$now` and `Date`
+   frozen to `startedAt` (`node:test` mock timers), deep-equal to the node's output.
+   Process `TZ` tried as UTC and Asia/Jakarta; the matching one is locked in.
+   `Hitung Laba Rugi & Neraca` uses the exported static data on the latest
+   execution; on older ones only baseline fields may differ, listed per field.
+2. **Sheets converter** against the Sheets fixtures (keys, types, unchanged rows).
+3. **Accurate client** with mocked HTTP (stop on empty, 50-page cap, 3 tries,
+   degrade to empty).
+4. **Dry runs** on live data, compared with n8n's output of the same morning.
+5. **PDF**: both files opened on the test phone; every tab present, nothing cut.
+6. **Hermes**: `qudamah cron run` for each job, forced failure reaches the failure
+   target (via `$QR/data/FORCE_FAIL`), `/sales`, `/finance`, `/aiconsult` + a
+   follow-up from the test phone,
+   and "jalankan ls /" from WhatsApp is refused (no terminal there).
+7. **Shadow week**: 7 days including a Sunday, daily `compare-n8n` report.
+
+---
+
+## 8. Go-live and rollback
+
+Recipients: **recommended** a WhatsApp group "Laporan Qudamah" with the owner, the
+team and the bot number (one message per report instead of one per person, lower
+ban risk). Group JID from `qudamah send --list whatsapp`. Settings:
+`WHATSAPP_GROUP_POLICY=allowlist`, `WHATSAPP_GROUP_ALLOWED_USERS=<jid>@g.us`,
+`WHATSAPP_REQUIRE_MENTION=true`, and every member who may use commands in
+`WHATSAPP_ALLOWED_USERS`. Alternative: individual numbers, each of whom sends the
+bot one message before the first report.
+
+Switch day:
+1. Re-run `export-n8n` + `import-static` (n8n kept updating snapshots).
+2. `recipients.mode = live`, re-run `install.sh`, remove `qudamah-bandingkan-n8n`.
+3. Operator deactivates the n8n workflow before the next 07:00.
+4. Run `qudamah-sales-harian` once by hand and check delivery.
+
+Rollback in minutes: `qudamah cron pause` the two report jobs, reactivate the n8n
+workflow. Keep n8n installed for a month.
+
+---
+
+## 9. Operations
+
+- Failures reach the `failure` number through Hermes; runs are logged in the
+  `runs` table and `$QR/logs/`.
+- Most likely real-world failure: Accurate refresh token expired. Fix:
+  `qudamah-report auth accurate`.
+- Copy `$QR/backup/` off the VPS regularly (rclone, scp, or the provider's snapshots).
+- After `hermes update`: `qudamah cron doctor`, `$QR/bin/qudamah-report doctor`,
+  one `/sales`.
+- Adding a month of sheets: one entry in `$QR/config/sources.json`.
+- Long-term memory is off for this profile (2.4). Follow-up questions work within a
+  conversation; the bot does not remember anything across conversations.
+
+---
+
+## 10. Phases (one Hermes prompt each)
+
+| # | Phase | Done when |
+| --- | --- | --- |
+| 1 | Orientation, no code | Agent summarises the target and the phases |
+| 2 | Runtime: Node, npm, Chromium via `hermes pm`, folders, wrappers | Versions shown, Chromium prints a test PDF |
+| 3 | CLI skeleton, config, DB, `doctor` | `qudamah-report doctor` runs |
+| 4 | `export-n8n` | Fixtures and static data saved |
+| 5 | Accurate client + `auth accurate` | Login done, dry fetch counts shown |
+| 6 | Sheets client + converter | Converter matches the Sheets fixtures |
+| 7 | Wrap 15 Code nodes + parity tests | Parity green or differences approved |
+| 8 | Pipeline, `sales` / `finance` / `context`, `import-static` | Dry run matches n8n's morning output |
+| 9 | PDF | Both PDFs approved on the phone |
+| 10 | Hermes wiring (`install.sh`) | Cron jobs listed, doctor clean |
+| 11 | End-to-end tests | Section 7 items 6 pass |
+| 12 | Shadow week | 7 clean comparison days |
+| 13 | Go-live | n8n off, reports reach owner and team |
+
+---
+
+## 11. Risks
 
 | Risk | Mitigation |
 | --- | --- |
-| Sheets row shape differs from n8n | Converter tested against captured n8n output |
-| Snapshots lost | Import twice, daily backups |
-| Different LLM than `gpt-5-mini` changes the tone or accuracy of the narrative | Compare during shadow week; Hermes can pin a model per cron job if needed |
-| Agent in `/aiconsult` runs other commands than intended | Only `qudamah-report context` on the approval allow list; skill says read-only |
-| Quick command 30 s timeout | Launcher detaches immediately (3.4) |
-| Hermes update changes cron/skill behaviour | Pin the Hermes version during shadow week; `qudamah cron doctor` after every update |
-| WhatsApp number restricted (unofficial bridge) | Dedicated number, only allow-listed recipients who messaged first, low volume (2 to 3 scheduled messages a day) |
-| PDF cuts tables or hides tabs | Print stylesheet shows all tabs; visual check in shadow week; HTML still attached |
-| Chromium missing or out of memory | Report still goes out without PDF, with a note; alert logged |
-| Profile deleted by mistake | Daily backup of `app.db` outside the profile |
-| Report data leaking into other profiles | Separate profile, no clone, built-in memory provider |
-| Server clock not Jakarta | `timezone` in Hermes config **and** explicit zone in the CLI |
-
----
-
-## 9. Open questions
-
-1. **n8n data for parity tests:** can you get an n8n API key or database access to
-   export 3 to 5 past executions and the workflow's static data (balance snapshots)?
-   Without executions we can still compare during the shadow week, but finance
-   needs the static data.
-2. Later live recipients: which numbers, and should the **daily sales** and the
-   **weekly finance** go to the same people?
-3. Keep sending the **HTML next to the PDF**, or PDF only once the PDF looks right?
+| Sheets item shape differs from n8n | Converter derived from and tested against fixtures |
+| Snapshots lost | Imported twice, daily backups, copy off the box |
+| DeepSeek changes the narrative's tone or accuracy | Same content rules as before; judged during the shadow week |
+| Bot used to run commands on the VPS | No terminal/file tools on WhatsApp; allowlist; `SOUL.md` |
+| Two WhatsApp bridges on one port | `whatsapp.bridge_port: 3001` before pairing |
+| WhatsApp number restricted (unofficial bridge) | Dedicated number, allow-listed recipients who wrote first, group delivery, low volume |
+| PDF cuts tables or hides tabs | Injected print stylesheet, phone check, report still sent without PDF |
+| Chromium missing libraries | Detected in phase 2, operator installs apt packages |
+| Quick command 30 s timeout | Launcher detaches and returns at once |
+| Hermes update changes behaviour | Checks after every update (section 9) |
+| Server clock not Jakarta | Hermes `timezone` + explicit zone in the CLI |
