@@ -49,7 +49,7 @@ Nomor owner dan tim yang boleh memakai perintah: <62xxx, 62xxx, ...>.
 
 ### Langkah 2 [MANUAL] Saat diminta Hermes
 
-1. `hermes gateway restart`
+1. `qudamah gateway restart`
 2. Buka n8n → workflow laporan → **nonaktifkan** (sebelum jam 07:00 berikutnya).
 3. Balas ke Hermes: "sudah".
 
@@ -61,9 +61,9 @@ Jangan hapus n8n dulu; simpan setidaknya satu bulan untuk jaga-jaga.
 
 | Gejala | Cek dan solusi |
 | --- | --- |
-| Bot tidak membalas | Nomor pengirim ada di `WHATSAPP_ALLOWED_USERS` (tanpa `+`); `hermes gateway status`; log di `~/.hermes/profiles/qudamah/logs/` dan `~/.hermes/profiles/qudamah/whatsapp/bridge.log` |
-| Balasan keluar dari nomor bot lama, atau bot lama mati | Port bridge bentrok: `qudamah config get whatsapp.bridge_port` harus 3001, lalu `hermes gateway restart` |
-| `qudamah gateway install` error | Normal di v0.21.5. Pakai `hermes gateway restart` |
+| Bot tidak membalas | Nomor pengirim ada di `WHATSAPP_ALLOWED_USERS` (tanpa `+`); `qudamah gateway status`; log di `~/.hermes/profiles/qudamah/logs/` dan `~/.hermes/profiles/qudamah/whatsapp/bridge.log` |
+| Balasan keluar dari nomor bot lama, atau bot lama mati | Port bridge bentrok: `qudamah config get whatsapp.bridge_port` harus beda dengan bridge profile lain (misalnya 3001), lalu `qudamah gateway restart` |
+| Bot qudamah mati setelah `hermes update` | Profile ini standalone (`gateway.standalone: true`), fitur sementara di Hermes. Baca catatan rilis sebelum update; cek `qudamah gateway status`, lalu `qudamah gateway start` |
 | Laporan jam 07:00 tidak datang | `qudamah cron list` (status dan error pengiriman), `qudamah cron doctor`, `qudamah config get timezone` |
 | PDF tidak ikut terkirim | Cek file di `$QR/out/<tanggal>/`, error di `qudamah cron list` |
 | Error Accurate 401 atau token | `~/.hermes/profiles/qudamah/qudamah-report/bin/qudamah-report auth accurate` |

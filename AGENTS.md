@@ -71,14 +71,17 @@ repo = $QR/repo                               this git checkout (branch hermes/m
 - Agent cron with `--script`: the script's stdout is injected into the prompt.
 - `MEDIA:/abs/path.pdf` inside delivered text sends the file as an attachment.
   Long text is split by Hermes at newline boundaries (WhatsApp limit 4,096 chars).
-- One multiplexed host gateway serves every profile. `qudamah gateway install`
-  is refused by design; restart only via the operator.
-- This profile's WhatsApp bridge runs on port **3001** (`whatsapp.bridge_port`), so it
-  never adopts another profile's bridge on 3000.
+- This profile runs its **own standalone gateway** (`gateway.standalone: true`),
+  separate from the host gateway of the other profiles. Restart it only via the
+  operator (`qudamah gateway restart`).
+- If another profile also uses WhatsApp, this profile's bridge runs on its own port
+  (`whatsapp.bridge_port`, e.g. 3001), so it never adopts another profile's bridge.
 - WhatsApp sessions of this profile have toolsets `skills` and `clarify` only
   (`platform_toolsets.whatsapp`): no terminal from WhatsApp, by design.
-- Long-term memory is disabled for this profile (`agent.disabled_toolsets: [memory]`)
-  and so is the background review (`auxiliary.background_review.enabled: false`).
+- Long-term memory is disabled for this profile (no external provider,
+  `memory.memory_enabled: false`, `memory.user_profile_enabled: false`,
+  `agent.disabled_toolsets: [memory]`) and so is the background review
+  (`auxiliary.background_review.enabled: false`).
   Continuity between phases comes from this file, the spec and git history. Keep both
   settings as they are.
 - Quick commands (`quick_commands`, type `exec`) time out after 30 seconds.

@@ -17,7 +17,7 @@ bot number**, produced on the operator's VPS, with n8n switched off at the end.
 | --- | --- |
 | Host | Existing VPS with **Hermes Agent v0.21.5** (Nous Research) |
 | Profile | New blank profile **`qudamah`** (no `--clone`); other profiles untouched |
-| Gateway | The existing **multiplexed host gateway** serves `qudamah` too (v0.21.5 refuses a per-profile gateway) |
+| Gateway | `qudamah` runs its **own standalone gateway** (`gateway.standalone: true`), separate from the other profiles |
 | Channel | WhatsApp, **Baileys bridge**, dedicated bot number, bridge port **3001** |
 | Model | **DeepSeek via OpenCode** (`opencode-go` or `opencode-zen`), set in this profile only |
 | Runtime | **Node.js, npm and Chromium managed by Hermes** (`hermes pm`); no system Node needed |
@@ -69,18 +69,18 @@ Profiles do not sandbox the filesystem. That is handled by toolsets (2.4).
 
 ### 2.2 Gateway
 
-In v0.21.5 one **multiplexed host gateway** (started from the default profile)
-serves every profile. `qudamah gateway install/start` is refused by design. After
-WhatsApp pairing the operator runs `hermes gateway restart` (brief restart of the
-other bots too) and checks `hermes gateway status`. Isolation per profile is kept
-by the gateway: keys, allowlists, sessions, approvals, cron and logs are resolved
-from the profile's own files.
+`qudamah` runs its own gateway with `gateway.standalone: true` (already set up by the
+operator). In v0.21.5 this is the documented workaround for the WhatsApp bridge on a
+secondary profile; the host gateway of the other profiles does not serve it, so
+`qudamah gateway restart` touches only this bot. The key is a temporary shim in
+Hermes: read release notes before `hermes update`. Cron jobs of this profile run only
+while its own gateway runs.
 
 ### 2.3 WhatsApp
 
 - Baileys bridge, bot mode, dedicated number, paired with `qudamah whatsapp`.
   The pairing wizard installs Hermes' Node if missing.
-- **`whatsapp.bridge_port: 3001`**, set before pairing. The bridge defaults to 3000,
+- **`whatsapp.bridge_port`** different from any other profile's bridge (e.g. 3001). The bridge defaults to 3000,
   and an adapter that finds a healthy bridge on its port adopts it: without this,
   `qudamah` could end up talking through another profile's WhatsApp number.
 - `whatsapp.reply_prefix: ""` (no "☤ Hermes Agent" header on reports).

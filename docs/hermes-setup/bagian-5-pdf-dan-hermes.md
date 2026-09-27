@@ -56,7 +56,7 @@ hermes/install.sh yang aman dijalankan berulang.
 6. Commit.
 ```
 
-Setelah tahap ini, **[MANUAL]** jalankan sekali `hermes gateway restart` supaya
+Setelah tahap ini, **[MANUAL]** jalankan sekali `qudamah gateway restart` (hanya gateway qudamah) supaya
 pengaturan WhatsApp yang baru (misalnya tanpa header "Hermes Agent") ikut aktif.
 
 ---
@@ -65,7 +65,7 @@ pengaturan WhatsApp yang baru (misalnya tanpa header "Hermes Agent") ikut aktif.
 
 - [ ] Kedua PDF sudah Anda cek di HP: semua tab ada, tidak terpotong (Prompt 9)
 - [ ] `qudamah cron list` menampilkan 4 job, `qudamah cron doctor` bersih (Prompt 10)
-- [ ] `hermes gateway restart` sudah dijalankan setelah Prompt 10
+- [ ] `qudamah gateway restart` sudah dijalankan setelah Prompt 10
 
 ## Kalau sesi terputus di tengah bagian ini
 
