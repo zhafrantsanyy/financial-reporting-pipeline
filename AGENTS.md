@@ -6,6 +6,7 @@ workflow in this repository onto this VPS as a Node.js command-line tool
 
 - **Spec (source of truth for what to build):** `docs/vps-migration-plan.md`
 - **Operator runbook (the prompts you receive come from here):** `docs/hermes-setup-guide.md`
+  (index) and `docs/hermes-setup/bagian-*.md` (the 7 parts)
 - **Original logic (read-only):** `src/code-nodes/*.js`, `src/prompts/*.md`,
   `workflow/daily-financial-report.workflow.json`, `docs/architecture.md`,
   `docs/engineering-notes.md`

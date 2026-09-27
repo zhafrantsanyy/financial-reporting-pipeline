@@ -2,7 +2,7 @@
 
 Status: **specification, not implemented yet.** It is built on the VPS by the Hermes
 agent of the `qudamah` profile, one phase at a time, following the prompts in
-[`hermes-setup-guide.md`](hermes-setup-guide.md). Rules for the agent are in
+[`hermes-setup-guide.md`](hermes-setup-guide.md) (7 parts under `hermes-setup/`). Rules for the agent are in
 [`../AGENTS.md`](../AGENTS.md).
 
 Goal: the same three products as the n8n workflow (daily sales report, weekly
